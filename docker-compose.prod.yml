@@ -1,0 +1,106 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME:-rmm_integration}
+      POSTGRES_USER: ${DB_USER:-rmm_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/src/database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - rmm_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-rmm_user} -d ${DB_NAME:-rmm_integration}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - rmm_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      NODE_ENV: production
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: ${DB_NAME:-rmm_integration}
+      DB_USER: ${DB_USER:-rmm_user}
+      DB_PASSWORD: ${DB_PASSWORD}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      JWT_SECRET: ${JWT_SECRET}
+      CONNECTWISE_API_URL: ${CONNECTWISE_API_URL}
+      CONNECTWISE_COMPANY_ID: ${CONNECTWISE_COMPANY_ID}
+      CONNECTWISE_PUBLIC_KEY: ${CONNECTWISE_PUBLIC_KEY}
+      CONNECTWISE_PRIVATE_KEY: ${CONNECTWISE_PRIVATE_KEY}
+      NABLE_API_URL: ${NABLE_API_URL}
+      NABLE_API_KEY: ${NABLE_API_KEY}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+      TEAMS_WEBHOOK_URL: ${TEAMS_WEBHOOK_URL}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - rmm_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        REACT_APP_API_URL: ${FRONTEND_API_URL:-/api}
+    restart: always
+    ports:
+      - "80:3000"
+      - "443:3443"
+    depends_on:
+      - backend
+    networks:
+      - rmm_network
+    volumes:
+      - ./ssl:/etc/nginx/ssl:ro
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  rmm_network:
+    driver: bridge
+
+
