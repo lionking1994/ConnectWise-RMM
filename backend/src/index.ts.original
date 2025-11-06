@@ -1,0 +1,311 @@
+console.log('Starting backend application...');
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import morgan from 'morgan';
+import dotenv from 'dotenv';
+import path from 'path';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import rateLimit from 'express-rate-limit';
+
+// Load .env from project root
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+console.log('Environment loaded, NODE_ENV:', process.env.NODE_ENV);
+
+console.log('Loading AppDataSource...');
+import { AppDataSource } from './database/dataSource';
+console.log('AppDataSource loaded');
+console.log('Loading errorHandler...');
+import { errorHandler } from './middleware/errorHandler';
+console.log('errorHandler loaded');
+console.log('Loading authRouter...');
+import { authRouter } from './routes/auth.routes';
+console.log('authRouter loaded');
+console.log('Loading ticketRouter...');
+import { ticketRouter } from './routes/ticket.routes';
+console.log('ticketRouter loaded');
+console.log('Loading automationRouter...');
+import { automationRouter } from './routes/automation.routes';
+console.log('automationRouter loaded');
+console.log('Loading webhookRouter...');
+import { webhookRouter } from './routes/webhook.routes';
+console.log('webhookRouter loaded');
+console.log('Loading analyticsRouter...');
+import { analyticsRouter } from './routes/analytics.routes';
+console.log('analyticsRouter loaded');
+console.log('Loading notificationRouter...');
+import { notificationRouter } from './routes/notification.routes';
+console.log('notificationRouter loaded');
+console.log('Loading credentialsRouter...');
+import { credentialsRouter } from './routes/credentials.routes';
+console.log('credentialsRouter loaded');
+console.log('Loading notificationsRouter...');
+import { notificationsRouter } from './routes/notifications.routes';
+console.log('notificationsRouter loaded');
+console.log('Loading reportsRouter...');
+import { reportsRouter } from './routes/reports.routes';
+console.log('reportsRouter loaded');
+// Temporarily disabled - needs fixing
+// console.log('Loading alertsRouter...');
+// import { alertsRouter } from './routes/alerts.routes';
+// console.log('alertsRouter loaded');
+console.log('Loading scriptsRouter...');
+import scriptsRouter from './routes/scripts.routes';
+console.log('scriptsRouter loaded');
+console.log('Loading alertMappingsRouter...');
+import alertMappingsRouter from './routes/alert-mappings.routes';
+console.log('alertMappingsRouter loaded');
+// Temporarily disabled - needs fixing
+// console.log('Loading escalationRouter...');
+// import escalationRouter from './routes/escalation.routes';
+// console.log('escalationRouter loaded');
+// Temporarily disabled - needs fixing
+// console.log('Loading boardsRouter...');
+// import boardsRouter from './routes/boards.routes';
+// console.log('boardsRouter loaded');
+console.log('Routes loaded');
+console.log('Loading logger...');
+import { logger } from './utils/logger';
+console.log('logger loaded');
+console.log('Loading AutomationEngine...');
+import { AutomationEngine } from './services/automation/AutomationEngine';
+console.log('AutomationEngine loaded');
+console.log('Loading WebhookService...');
+import { WebhookService } from './services/WebhookService';
+console.log('WebhookService loaded');
+console.log('Loading SyncService...');
+import { SyncService } from './services/SyncService';
+console.log('SyncService loaded');
+console.log('Loading initializeQueues...');
+import { initializeQueues } from './queues';
+console.log('initializeQueues loaded');
+console.log('Loading initializeCronJobs...');
+import { initializeCronJobs } from './jobs/cronJobs';
+console.log('initializeCronJobs loaded');
+console.log('All imports loaded');
+
+const app = express();
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: {
+    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    credentials: true
+  }
+});
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000'),
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100'),
+  message: 'Too many requests from this IP, please try again later.'
+});
+
+// Middleware
+app.use(helmet({
+  contentSecurityPolicy: false, // Disable for development, configure properly for production
+  crossOriginEmbedderPolicy: false
+}));
+
+// CORS configuration for external access
+const corsOptions = {
+  origin: function (origin: any, callback: any) {
+    // Allow requests with no origin (like mobile apps or Postman)
+    if (!origin) return callback(null, true);
+    
+    // In production, you should specify allowed origins
+    const allowedOrigins = [
+      process.env.FRONTEND_URL || 'http://localhost:3000',
+      'http://localhost:3000',
+      'http://localhost:3001',
+      // Add your server's IP or domain here
+      process.env.EXTERNAL_URL,
+      // Allow any origin in development (remove in production)
+      ...(process.env.NODE_ENV === 'development' ? [origin] : [])
+    ].filter(Boolean);
+    
+    if (allowedOrigins.indexOf(origin) !== -1 || process.env.ALLOW_ALL_ORIGINS === 'true') {
+      callback(null, true);
+    } else {
+      callback(null, true); // Temporarily allow all origins - configure for production
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+};
+
+app.use(cors(corsOptions));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(morgan('combined', { stream: { write: (message) => logger.info(message.trim()) } }));
+app.use('/api', limiter);
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime()
+  });
+});
+
+// API Routes
+app.use('/api/auth', authRouter);
+app.use('/api/tickets', ticketRouter);
+app.use('/api/automation', automationRouter);
+app.use('/api/webhooks', webhookRouter);
+app.use('/api/analytics', analyticsRouter);
+app.use('/api/notifications', notificationsRouter); // Enhanced notifications
+app.use('/api/notification', notificationRouter); // Legacy notifications
+app.use('/api/credentials', credentialsRouter);
+app.use('/api/reports', reportsRouter);
+// app.use('/api/alerts', alertsRouter); // Temporarily disabled - needs fixing
+app.use('/api/scripts', scriptsRouter);
+app.use('/api/alert-mappings', alertMappingsRouter);
+// app.use('/api/escalation', escalationRouter); // Temporarily disabled - needs fixing
+// app.use('/api/boards', boardsRouter); // Temporarily disabled - needs fixing
+
+// Socket.IO connection handling
+io.on('connection', (socket) => {
+  logger.info(`Client connected: ${socket.id}`);
+
+  socket.on('subscribe', (room: string) => {
+    socket.join(room);
+    logger.info(`Client ${socket.id} joined room: ${room}`);
+  });
+
+  socket.on('unsubscribe', (room: string) => {
+    socket.leave(room);
+    logger.info(`Client ${socket.id} left room: ${room}`);
+  });
+
+  socket.on('disconnect', () => {
+    logger.info(`Client disconnected: ${socket.id}`);
+  });
+});
+
+// Error handling middleware (must be last)
+app.use(errorHandler);
+
+// Make io accessible to routes
+app.set('io', io);
+
+const PORT = parseInt(process.env.PORT || '3001', 10);
+const HOST = process.env.HOST || '0.0.0.0'; // Listen on all interfaces
+
+async function startServer() {
+  try {
+    console.log('Starting server initialization...');
+    // Initialize database connection
+    console.log('Initializing database connection...');
+    await AppDataSource.initialize();
+    logger.info('Database connection established');
+
+    // Run migrations - commented out for initial setup
+    // await AppDataSource.runMigrations();
+    // logger.info('Database migrations completed');
+
+    // Initialize queues - temporarily disabled (requires Redis)
+    // await initializeQueues();
+    // logger.info('Message queues initialized');
+    logger.info('Message queues skipped - Redis not configured');
+
+    // Initialize automation engine - delay to ensure tables are created
+    setTimeout(async () => {
+      try {
+        const automationEngine = AutomationEngine.getInstance();
+        await automationEngine.initialize();
+        logger.info('Automation engine initialized');
+      } catch (error) {
+        logger.warn('Automation engine initialization failed - will retry later:', error);
+      }
+    }, 5000);
+
+    // Initialize webhook service - delay to ensure tables are created
+    setTimeout(async () => {
+      try {
+        const webhookService = WebhookService.getInstance();
+        await webhookService.initialize();
+        logger.info('Webhook service initialized');
+      } catch (error) {
+        logger.warn('Webhook service initialization failed - will retry later:', error);
+      }
+    }, 5000);
+
+    // Initialize sync service for real-time data
+    setTimeout(async () => {
+      try {
+        const syncService = SyncService.getInstance();
+        await syncService.initialize();
+        logger.info('Sync service initialized - will sync with external APIs if credentials are configured');
+      } catch (error) {
+        logger.warn('Sync service initialization failed - will work with local data:', error);
+      }
+    }, 7000);
+
+    // Initialize board sync intervals
+    setTimeout(async () => {
+      try {
+        const { BoardManagementService } = await import('./services/BoardManagementService');
+        const boardService = new BoardManagementService();
+        await boardService.initializeSyncIntervals();
+        logger.info('Board sync intervals initialized');
+      } catch (error) {
+        logger.warn('Board sync initialization failed - will retry later:', error);
+      }
+    }, 8000);
+
+    // Initialize cron jobs
+    initializeCronJobs();
+    logger.info('Cron jobs initialized');
+
+    // Start server
+    httpServer.listen(PORT, HOST, () => {
+      logger.info(`Server is running on http://${HOST}:${PORT}`);
+      logger.info(`Environment: ${process.env.NODE_ENV}`);
+      logger.info(`Accessible from: http://<your-server-ip>:${PORT}`);
+    });
+
+    httpServer.on('error', (error: any) => {
+      if (error.code === 'EADDRINUSE') {
+        logger.error(`Port ${PORT} is already in use`);
+        process.exit(1);
+      } else {
+        logger.error('Server error:', error);
+      }
+    });
+  } catch (error) {
+    logger.error('Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  logger.info('SIGTERM signal received: closing HTTP server');
+  httpServer.close(async () => {
+    logger.info('HTTP server closed');
+    await AppDataSource.destroy();
+    logger.info('Database connection closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', async () => {
+  logger.info('SIGINT signal received: closing HTTP server');
+  httpServer.close(async () => {
+    logger.info('HTTP server closed');
+    await AppDataSource.destroy();
+    logger.info('Database connection closed');
+    process.exit(0);
+  });
+});
+
+console.log('About to call startServer()...');
+startServer().catch(error => {
+  console.error('Failed to start server:', error);
+  process.exit(1);
+});
+
+

@@ -39,7 +39,6 @@ export async function initializeQueues(): Promise<void> {
     return { success: true };
   });
 
-  logger.info('Message queues initialized');
 }
 
 export { automationQueue, notificationQueue, webhookQueue };

@@ -16,7 +16,26 @@ const consoleFormat = winston.format.combine(
   winston.format.printf(({ timestamp, level, message, ...metadata }) => {
     let msg = `${timestamp} [${level}]: ${message}`;
     if (Object.keys(metadata).length > 0) {
-      msg += ` ${JSON.stringify(metadata)}`;
+      try {
+        // Handle circular references by using a replacer
+        const seen = new WeakSet();
+        const sanitized = JSON.stringify(metadata, (key, value) => {
+          if (typeof value === 'object' && value !== null) {
+            if (seen.has(value)) {
+              return '[Circular]';
+            }
+            seen.add(value);
+            // Skip large objects that might cause issues
+            if (key === 'req' || key === 'res' || key === 'socket' || key === '_req' || key === '_res') {
+              return '[Object]';
+            }
+          }
+          return value;
+        });
+        msg += ` ${sanitized}`;
+      } catch (e) {
+        msg += ` [Error serializing metadata]`;
+      }
     }
     return msg;
   })

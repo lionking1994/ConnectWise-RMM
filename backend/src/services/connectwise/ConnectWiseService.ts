@@ -2,6 +2,7 @@ import axios, { AxiosInstance } from 'axios';
 import { logger } from '../../utils/logger';
 import { Ticket, TicketPriority, TicketStatus } from '../../entities/Ticket';
 import retry from 'retry';
+import { CredentialsService } from '../CredentialsService';
 
 export interface ConnectWiseTicket {
   id: number;
@@ -36,40 +37,70 @@ export interface ConnectWiseTicket {
 
 export class ConnectWiseService {
   private static instance: ConnectWiseService;
-  private client: AxiosInstance;
-  private companyId: string;
+  private client: AxiosInstance | null = null;
+  private companyId: string = '';
+  private credentialsService: CredentialsService;
+  private initialized: boolean = false;
 
   private constructor() {
-    this.companyId = process.env.CONNECTWISE_COMPANY_ID || '';
-    
-    const authString = `${this.companyId}+${process.env.CONNECTWISE_PUBLIC_KEY}:${process.env.CONNECTWISE_PRIVATE_KEY}`;
-    const encodedAuth = Buffer.from(authString).toString('base64');
+    this.credentialsService = CredentialsService.getInstance();
+    // Initial setup with env vars if available
+    this.setupClient();
+  }
 
-    this.client = axios.create({
-      baseURL: process.env.CONNECTWISE_API_URL,
-      headers: {
-        'Authorization': `Basic ${encodedAuth}`,
-        'Content-Type': 'application/json',
-        'clientId': process.env.CONNECTWISE_CLIENT_ID || ''
-      },
-      timeout: 30000
-    });
+  private async setupClient(): Promise<void> {
+    try {
+      // Try to get credentials from database first
+      const credentials = await this.credentialsService.getConnectWiseCredentials();
+      
+      if (credentials) {
+        this.companyId = credentials.companyId;
+        const authString = `${credentials.companyId}+${credentials.publicKey}:${credentials.privateKey}`;
+        const encodedAuth = Buffer.from(authString).toString('base64');
 
-    // Add response interceptor for logging
-    this.client.interceptors.response.use(
-      response => {
-        logger.debug(`ConnectWise API Response: ${response.status} ${response.config.url}`);
-        return response;
-      },
-      error => {
-        logger.error(`ConnectWise API Error: ${error.message}`, {
-          url: error.config?.url,
-          status: error.response?.status,
-          data: error.response?.data
+        this.client = axios.create({
+          baseURL: credentials.apiUrl,
+          headers: {
+            'Authorization': `Basic ${encodedAuth}`,
+            'Content-Type': 'application/json',
+            'clientId': credentials.clientId || ''
+          },
+          timeout: 30000
         });
-        return Promise.reject(error);
+
+        // Add response interceptor for logging
+        this.client.interceptors.response.use(
+          response => {
+            logger.debug(`ConnectWise API Response: ${response.status} ${response.config.url}`);
+            return response;
+          },
+          error => {
+            logger.error(`ConnectWise API Error: ${error.message}`, {
+              url: error.config?.url,
+              status: error.response?.status,
+              data: error.response?.data
+            });
+            return Promise.reject(error);
+          }
+        );
+        
+        this.initialized = true;
+        logger.info('ConnectWise client initialized with credentials from database');
+      } else {
+        logger.warn('No ConnectWise credentials found in database or environment');
       }
-    );
+    } catch (error) {
+      logger.error('Error setting up ConnectWise client:', error);
+    }
+  }
+
+  private async ensureInitialized(): Promise<void> {
+    if (!this.initialized || !this.client) {
+      await this.setupClient();
+      if (!this.client) {
+        throw new Error('ConnectWise client not configured. Please check credentials.');
+      }
+    }
   }
 
   public static getInstance(): ConnectWiseService {
@@ -102,6 +133,7 @@ export class ConnectWiseService {
   }
 
   async getTicket(ticketId: string): Promise<ConnectWiseTicket> {
+    await this.ensureInitialized();
     return this.executeWithRetry(async () => {
       const response = await this.client.get(`/service/tickets/${ticketId}`);
       return response.data;

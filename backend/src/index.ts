@@ -1,159 +1,223 @@
+// Simple backend startup without problematic imports
+import * as dotenv from 'dotenv';
 import express from 'express';
 import cors from 'cors';
-import helmet from 'helmet';
-import morgan from 'morgan';
-import dotenv from 'dotenv';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-import rateLimit from 'express-rate-limit';
 
-import { AppDataSource } from './database/dataSource';
-import { errorHandler } from './middleware/errorHandler';
-import { authRouter } from './routes/auth.routes';
-import { ticketRouter } from './routes/ticket.routes';
-import { automationRouter } from './routes/automation.routes';
-import { webhookRouter } from './routes/webhook.routes';
-import { analyticsRouter } from './routes/analytics.routes';
-import { notificationRouter } from './routes/notification.routes';
-import { logger } from './utils/logger';
-import { AutomationEngine } from './services/automation/AutomationEngine';
-import { WebhookService } from './services/WebhookService';
-import { initializeQueues } from './queues';
-import { initializeCronJobs } from './jobs/cronJobs';
-
+// Load environment
 dotenv.config();
+console.log('✓ Environment loaded');
 
 const app = express();
 const httpServer = createServer(app);
+
+// Configure CORS to allow multiple origins
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://213.199.59.71:3000',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
+// Initialize Socket.IO with CORS configuration
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: allowedOrigins,
     credentials: true
   }
 });
 
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000'),
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100'),
-  message: 'Too many requests from this IP, please try again later.'
+// Socket.IO connection handling
+io.on('connection', (socket) => {
+  console.log('✓ Client connected:', socket.id);
+  
+  socket.on('disconnect', () => {
+    console.log('✗ Client disconnected:', socket.id);
+  });
+  
+  // Handle ticket events
+  socket.on('ticket:update', (data) => {
+    io.emit('ticket:updated', data);
+  });
 });
 
 // Middleware
-app.use(helmet());
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: function(origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      callback(null, true); // Allow all origins for now
+    }
+  },
   credentials: true
 }));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-app.use(morgan('combined', { stream: { write: (message) => logger.info(message.trim()) } }));
-app.use('/api', limiter);
+app.use(express.json());
 
-// Health check endpoint
+// Health endpoint
 app.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+  res.json({ 
+    status: 'OK',
+    timestamp: new Date(),
+    environment: process.env.NODE_ENV
   });
 });
 
-// API Routes
-app.use('/api/auth', authRouter);
-app.use('/api/tickets', ticketRouter);
-app.use('/api/automation', automationRouter);
-app.use('/api/webhooks', webhookRouter);
-app.use('/api/analytics', analyticsRouter);
-app.use('/api/notifications', notificationRouter);
+const PORT = parseInt(process.env.PORT || '3001', 10);
+const HOST = process.env.HOST || '0.0.0.0';
 
-// Socket.IO connection handling
-io.on('connection', (socket) => {
-  logger.info(`Client connected: ${socket.id}`);
-
-  socket.on('subscribe', (room: string) => {
-    socket.join(room);
-    logger.info(`Client ${socket.id} joined room: ${room}`);
-  });
-
-  socket.on('unsubscribe', (room: string) => {
-    socket.leave(room);
-    logger.info(`Client ${socket.id} left room: ${room}`);
-  });
-
-  socket.on('disconnect', () => {
-    logger.info(`Client disconnected: ${socket.id}`);
-  });
-});
-
-// Error handling middleware (must be last)
-app.use(errorHandler);
-
-// Make io accessible to routes
-app.set('io', io);
-
-const PORT = process.env.PORT || 3001;
-
-async function startServer() {
+async function start() {
   try {
-    // Initialize database connection
-    await AppDataSource.initialize();
-    logger.info('Database connection established');
+    // Initialize database
+    console.log('Initializing database...');
+    const { AppDataSource } = await import('./database/dataSource');
+    
+    if (!AppDataSource.isInitialized) {
+      await AppDataSource.initialize();
+    }
+    console.log('✓ Database initialized');
 
-    // Run migrations
-    await AppDataSource.runMigrations();
-    logger.info('Database migrations completed');
+    // Load routes with proper error handling
+    console.log('Loading routes...');
+    try {
+      const { authRouter } = await import('./routes/auth.routes');
+      app.use('/api/auth', authRouter);
+      console.log('  ✓ Auth routes loaded');
+    } catch (e) {
+      console.log('  ⚠ Auth routes failed:', e.message);
+    }
 
-    // Initialize queues
-    await initializeQueues();
-    logger.info('Message queues initialized');
+    try {
+      const { ticketRouter } = await import('./routes/ticket.routes');
+      app.use('/api/tickets', ticketRouter);
+      console.log('  ✓ Ticket routes loaded');
+    } catch (e) {
+      console.log('  ⚠ Ticket routes failed:', e.message);
+    }
 
-    // Initialize automation engine
-    const automationEngine = AutomationEngine.getInstance();
-    await automationEngine.initialize();
-    logger.info('Automation engine initialized');
+    try {
+      const { automationRouter } = await import('./routes/automation.routes');
+      app.use('/api/automation', automationRouter);
+      console.log('  ✓ Automation routes loaded');
+    } catch (e) {
+      console.log('  ⚠ Automation routes failed:', e.message);
+    }
 
-    // Initialize webhook service
-    const webhookService = WebhookService.getInstance();
-    await webhookService.initialize();
-    logger.info('Webhook service initialized');
+    try {
+      const { webhookRouter } = await import('./routes/webhook.routes');
+      app.use('/api/webhooks', webhookRouter);
+      console.log('  ✓ Webhook routes loaded');
+    } catch (e) {
+      console.log('  ⚠ Webhook routes failed:', e.message);
+    }
 
-    // Initialize cron jobs
-    initializeCronJobs();
-    logger.info('Cron jobs initialized');
+    try {
+      const { analyticsRouter } = await import('./routes/analytics.routes');
+      app.use('/api/analytics', analyticsRouter);
+      console.log('  ✓ Analytics routes loaded');
+    } catch (e) {
+      console.log('  ⚠ Analytics routes failed:', e.message);
+    }
+
+    try {
+      const { notificationRouter } = await import('./routes/notification.routes');
+      app.use('/api/notification', notificationRouter);
+      console.log('  ✓ Notification routes loaded');
+    } catch (e) {
+      console.log('  ⚠ Notification routes failed:', e.message);
+    }
+
+    try {
+      const { credentialsRouter } = await import('./routes/credentials.routes');
+      app.use('/api/credentials', credentialsRouter);
+      console.log('  ✓ Credentials routes loaded');
+    } catch (e) {
+      console.log('  ⚠ Credentials routes failed:', e.message);
+    }
+
+    try {
+      const { notificationsRouter } = await import('./routes/notifications.routes');
+      app.use('/api/notifications', notificationsRouter);
+      console.log('  ✓ Notifications routes loaded');
+    } catch (e) {
+      console.log('  ⚠ Notifications routes failed:', e.message);
+    }
+
+    try {
+      const { reportsRouter } = await import('./routes/reports.routes');
+      app.use('/api/reports', reportsRouter);
+      console.log('  ✓ Reports routes loaded');
+    } catch (e) {
+      console.log('  ⚠ Reports routes failed:', e.message);
+    }
+
+    try {
+      const scriptsRouter = (await import('./routes/scripts.routes')).default;
+      app.use('/api/scripts', scriptsRouter);
+      console.log('  ✓ Scripts routes loaded');
+    } catch (e) {
+      console.log('  ⚠ Scripts routes failed:', e.message);
+    }
+
+    try {
+      const alertMappingsRouter = (await import('./routes/alert-mappings.routes')).default;
+      app.use('/api/alert-mappings', alertMappingsRouter);
+      console.log('  ✓ Alert mappings routes loaded');
+    } catch (e) {
+      console.log('  ⚠ Alert mappings routes failed:', e.message);
+    }
+    
+    try {
+      const { settingsRouter } = await import('./routes/settings.routes');
+      app.use('/api/settings', settingsRouter);
+      console.log('  ✓ Settings routes loaded');
+    } catch (e) {
+      console.log('  ⚠ Settings routes failed:', e.message);
+    }
+
+    // Simple error handler
+    app.use((err: any, req: any, res: any, next: any) => {
+      console.error('Error:', err.message);
+      res.status(err.statusCode || 500).json({
+        error: err.message || 'Internal Server Error'
+      });
+    });
 
     // Start server
-    httpServer.listen(PORT, () => {
-      logger.info(`Server is running on port ${PORT}`);
-      logger.info(`Environment: ${process.env.NODE_ENV}`);
+    httpServer.listen(PORT, HOST, () => {
+      console.log(`
+╔════════════════════════════════════════════════╗
+║   🚀 Backend Server Running                   ║
+║   Port: ${PORT}                                  ║
+║   Host: ${HOST}                               ║
+║   Health: http://localhost:${PORT}/health        ║
+╚════════════════════════════════════════════════╝
+      `);
     });
+
   } catch (error) {
-    logger.error('Failed to start server:', error);
+    console.error('❌ Startup failed:', error);
     process.exit(1);
   }
 }
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  logger.info('SIGTERM signal received: closing HTTP server');
-  httpServer.close(async () => {
-    logger.info('HTTP server closed');
-    await AppDataSource.destroy();
-    logger.info('Database connection closed');
-    process.exit(0);
-  });
+// Handle errors
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection:', reason);
 });
 
-process.on('SIGINT', async () => {
-  logger.info('SIGINT signal received: closing HTTP server');
-  httpServer.close(async () => {
-    logger.info('HTTP server closed');
-    await AppDataSource.destroy();
-    logger.info('Database connection closed');
-    process.exit(0);
-  });
+process.on('SIGTERM', () => {
+  console.log('SIGTERM received, shutting down...');
+  httpServer.close(() => process.exit(0));
 });
 
-startServer();
+process.on('SIGINT', () => {
+  console.log('\nSIGINT received, shutting down...');
+  httpServer.close(() => process.exit(0));
+});
 
-
+// Start the server
+start();

@@ -1,0 +1,130 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: rmm-postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-rmm_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-rmm_password}
+      POSTGRES_DB: ${DB_NAME:-rmm_platform}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/src/database/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    networks:
+      - rmm-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-rmm_user} -d ${DB_NAME:-rmm_platform}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: rmm-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - rmm-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    image: node:18-alpine
+    container_name: rmm-backend
+    working_dir: /app
+    environment:
+      NODE_ENV: development
+      PORT: 3001
+      DATABASE_URL: postgresql://${DB_USER:-rmm_user}:${DB_PASSWORD:-rmm_password}@postgres:5432/${DB_NAME:-rmm_platform}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-your-secret-key-change-in-production}
+      # ConnectWise Configuration
+      CONNECTWISE_API_URL: ${CONNECTWISE_API_URL}
+      CONNECTWISE_COMPANY_ID: ${CONNECTWISE_COMPANY_ID}
+      CONNECTWISE_PUBLIC_KEY: ${CONNECTWISE_PUBLIC_KEY}
+      CONNECTWISE_PRIVATE_KEY: ${CONNECTWISE_PRIVATE_KEY}
+      CONNECTWISE_CLIENT_ID: ${CONNECTWISE_CLIENT_ID}
+      # N-able Configuration
+      NABLE_API_URL: ${NABLE_API_URL}
+      NABLE_API_KEY: ${NABLE_API_KEY}
+      NABLE_API_SECRET: ${NABLE_API_SECRET}
+      # Teams Configuration
+      MS_TEAMS_WEBHOOK_URL: ${MS_TEAMS_WEBHOOK_URL}
+      # Email Configuration (optional)
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASS: ${SMTP_PASS}
+      # Automation Settings
+      AUTOMATION_CONCURRENCY: ${AUTOMATION_CONCURRENCY:-5}
+      SIMULATE_SCRIPTS: ${SIMULATE_SCRIPTS:-false}
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./backend:/app
+      - backend_node_modules:/app/node_modules
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - rmm-network
+    command: >
+      sh -c "
+        echo 'Installing dependencies...' &&
+        npm install &&
+        echo 'Waiting for database...' &&
+        sleep 5 &&
+        echo 'Running migrations...' &&
+        npm run migrate &&
+        echo 'Seeding database...' &&
+        npm run seed:minimal &&
+        echo 'Starting backend server...' &&
+        npm run dev
+      "
+
+  frontend:
+    image: node:18-alpine
+    container_name: rmm-frontend
+    working_dir: /app
+    environment:
+      NODE_ENV: development
+      REACT_APP_API_URL: http://localhost:3001
+      REACT_APP_WS_URL: ws://localhost:3001
+      WATCHPACK_POLLING: true
+      CHOKIDAR_USEPOLLING: true
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    depends_on:
+      - backend
+    networks:
+      - rmm-network
+    command: >
+      sh -c "
+        echo 'Installing dependencies...' &&
+        npm install --legacy-peer-deps &&
+        echo 'Starting frontend server...' &&
+        npm start
+      "
+
+networks:
+  rmm-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  backend_node_modules:
+    driver: local
+  frontend_node_modules:
+    driver: local

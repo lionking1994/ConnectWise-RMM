@@ -1,0 +1,499 @@
+{
+  "automationRules": [
+    {
+      "name": "Auto Clean Disk Space",
+      "description": "Automatically clean disk space when N-able detects low disk space",
+      "enabled": true,
+      "priority": 1,
+      "trigger": {
+        "type": "alert",
+        "conditions": {
+          "alertType": "DISK_SPACE_LOW",
+          "severity": ["HIGH", "CRITICAL"]
+        }
+      },
+      "actions": [
+        {
+          "type": "execute_script",
+          "scriptId": "Clean-TempFiles",
+          "parameters": {
+            "targetDrive": "C:",
+            "cleanupType": "temp_files",
+            "thresholdGB": "10",
+            "deleteOlderThanDays": "30"
+          },
+          "timeout": 300,
+          "retries": 2
+        },
+        {
+          "type": "update_ticket",
+          "onSuccess": {
+            "addNote": "Automated disk cleanup completed. Freed {{freedSpace}}GB of disk space.",
+            "closeTicket": true,
+            "status": "Resolved"
+          },
+          "onFailure": {
+            "addNote": "Disk cleanup script failed: {{error}}. Manual intervention required.",
+            "escalate": true,
+            "assignTo": "Level2Support"
+          }
+        },
+        {
+          "type": "notification",
+          "channel": "teams",
+          "onFailure": {
+            "message": "🔴 Critical: Disk cleanup failed on {{deviceName}}",
+            "mentions": ["@escalation-team"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auto Restart Service",
+      "description": "Automatically restart stopped critical services",
+      "enabled": true,
+      "priority": 1,
+      "trigger": {
+        "type": "alert",
+        "conditions": {
+          "alertType": "SERVICE_STOPPED",
+          "severity": ["CRITICAL"],
+          "serviceFilter": ["wuauserv", "Spooler", "W32Time", "MSSQLSERVER"]
+        }
+      },
+      "actions": [
+        {
+          "type": "execute_script",
+          "scriptId": "Restart-Service",
+          "parameters": {
+            "serviceName": "{{alertServiceName}}",
+            "forcedRestart": true,
+            "waitTime": 30,
+            "verifyRunning": true
+          },
+          "timeout": 120,
+          "retries": 3
+        },
+        {
+          "type": "update_ticket",
+          "onSuccess": {
+            "addNote": "Service {{serviceName}} restarted successfully at {{timestamp}}",
+            "closeTicket": true,
+            "status": "Resolved"
+          },
+          "onFailure": {
+            "addNote": "Failed to restart service {{serviceName}} after {{attempts}} attempts. Error: {{error}}",
+            "escalate": true,
+            "priority": "Critical",
+            "assignTo": "Level2Support"
+          }
+        },
+        {
+          "type": "notification",
+          "channel": "teams",
+          "onFailure": {
+            "message": "🔴 CRITICAL: Service {{serviceName}} failed to restart on {{deviceName}}",
+            "mentions": ["@oncall-tech"],
+            "actionButtons": [
+              {
+                "text": "View Ticket",
+                "url": "{{ticketUrl}}"
+              },
+              {
+                "text": "Remote Access",
+                "url": "{{remoteAccessUrl}}"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Handle High CPU",
+      "description": "Analyze and remediate high CPU usage",
+      "enabled": true,
+      "priority": 2,
+      "trigger": {
+        "type": "alert",
+        "conditions": {
+          "alertType": "CPU_HIGH",
+          "severity": ["HIGH"],
+          "threshold": {
+            "cpuPercent": 90,
+            "duration": 300
+          }
+        }
+      },
+      "actions": [
+        {
+          "type": "execute_script",
+          "scriptId": "Analyze-HighCPU",
+          "parameters": {
+            "topProcesses": 10,
+            "killIfOver": 95,
+            "excludeProcesses": ["System", "svchost", "csrss"],
+            "collectDiagnostics": true
+          },
+          "timeout": 180,
+          "retries": 1
+        },
+        {
+          "type": "update_ticket",
+          "always": {
+            "addNote": "CPU Analysis Report:\n{{processReport}}\nTop Process: {{topProcess}} ({{cpuUsage}}%)"
+          },
+          "onSuccess": {
+            "addNote": "High CPU issue resolved. {{action}} taken.",
+            "status": "Resolved"
+          },
+          "onFailure": {
+            "addNote": "Unable to automatically resolve high CPU. Manual review required.",
+            "assignTo": "{{primaryTech}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Retry Failed Backup",
+      "description": "Attempt to retry failed backup jobs",
+      "enabled": true,
+      "priority": 1,
+      "trigger": {
+        "type": "alert",
+        "conditions": {
+          "alertType": "BACKUP_FAILED",
+          "severity": ["HIGH", "CRITICAL"]
+        }
+      },
+      "actions": [
+        {
+          "type": "execute_script",
+          "scriptId": "Retry-Backup",
+          "parameters": {
+            "backupJob": "{{jobName}}",
+            "retryType": "incremental",
+            "verifySpace": true,
+            "notifyOnStart": true
+          },
+          "timeout": 600,
+          "retries": 1
+        },
+        {
+          "type": "update_ticket",
+          "onSuccess": {
+            "addNote": "Backup completed successfully on retry.\nJob: {{jobName}}\nDuration: {{duration}}\nSize: {{backupSize}}",
+            "closeTicket": true,
+            "status": "Resolved"
+          },
+          "onFailure": {
+            "addNote": "CRITICAL: Backup retry failed.\nJob: {{jobName}}\nError: {{error}}\nImmediate attention required!",
+            "escalate": true,
+            "priority": "Critical",
+            "assignTo": "BackupTeam"
+          }
+        },
+        {
+          "type": "notification",
+          "channel": "teams",
+          "always": {
+            "message": "Backup retry initiated for {{jobName}}"
+          },
+          "onFailure": {
+            "message": "🔴 CRITICAL BACKUP FAILURE: {{jobName}} on {{deviceName}}",
+            "mentions": ["@backup-team", "@manager"],
+            "urgency": "high"
+          }
+        }
+      ]
+    }
+  ],
+  "globalSettings": {
+    "defaultTimeout": 300,
+    "maxRetries": 3,
+    "notificationChannels": {
+      "teams": {
+        "enabled": true,
+        "webhookUrl": "{{MS_TEAMS_WEBHOOK_URL}}",
+        "defaultChannel": "Network Operations Center"
+      }
+    },
+    "escalationChain": [
+      {
+        "level": 1,
+        "assignTo": "primaryTech",
+        "waitMinutes": 30
+      },
+      {
+        "level": 2,
+        "assignTo": "Level2Support",
+        "waitMinutes": 60,
+        "notify": ["teams"]
+      },
+      {
+        "level": 3,
+        "assignTo": "Manager",
+        "waitMinutes": 120,
+        "notify": ["teams", "email", "phone"]
+      }
+    ],
+    "workingHours": {
+      "enabled": true,
+      "timezone": "America/New_York",
+      "businessHours": {
+        "start": "08:00",
+        "end": "18:00"
+      },
+      "businessDays": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+      "afterHoursBehavior": "escalate_immediately"
+    }
+  }
+}
+  "automationRules": [
+    {
+      "name": "Auto Clean Disk Space",
+      "description": "Automatically clean disk space when N-able detects low disk space",
+      "enabled": true,
+      "priority": 1,
+      "trigger": {
+        "type": "alert",
+        "conditions": {
+          "alertType": "DISK_SPACE_LOW",
+          "severity": ["HIGH", "CRITICAL"]
+        }
+      },
+      "actions": [
+        {
+          "type": "execute_script",
+          "scriptId": "Clean-TempFiles",
+          "parameters": {
+            "targetDrive": "C:",
+            "cleanupType": "temp_files",
+            "thresholdGB": "10",
+            "deleteOlderThanDays": "30"
+          },
+          "timeout": 300,
+          "retries": 2
+        },
+        {
+          "type": "update_ticket",
+          "onSuccess": {
+            "addNote": "Automated disk cleanup completed. Freed {{freedSpace}}GB of disk space.",
+            "closeTicket": true,
+            "status": "Resolved"
+          },
+          "onFailure": {
+            "addNote": "Disk cleanup script failed: {{error}}. Manual intervention required.",
+            "escalate": true,
+            "assignTo": "Level2Support"
+          }
+        },
+        {
+          "type": "notification",
+          "channel": "teams",
+          "onFailure": {
+            "message": "🔴 Critical: Disk cleanup failed on {{deviceName}}",
+            "mentions": ["@escalation-team"]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Auto Restart Service",
+      "description": "Automatically restart stopped critical services",
+      "enabled": true,
+      "priority": 1,
+      "trigger": {
+        "type": "alert",
+        "conditions": {
+          "alertType": "SERVICE_STOPPED",
+          "severity": ["CRITICAL"],
+          "serviceFilter": ["wuauserv", "Spooler", "W32Time", "MSSQLSERVER"]
+        }
+      },
+      "actions": [
+        {
+          "type": "execute_script",
+          "scriptId": "Restart-Service",
+          "parameters": {
+            "serviceName": "{{alertServiceName}}",
+            "forcedRestart": true,
+            "waitTime": 30,
+            "verifyRunning": true
+          },
+          "timeout": 120,
+          "retries": 3
+        },
+        {
+          "type": "update_ticket",
+          "onSuccess": {
+            "addNote": "Service {{serviceName}} restarted successfully at {{timestamp}}",
+            "closeTicket": true,
+            "status": "Resolved"
+          },
+          "onFailure": {
+            "addNote": "Failed to restart service {{serviceName}} after {{attempts}} attempts. Error: {{error}}",
+            "escalate": true,
+            "priority": "Critical",
+            "assignTo": "Level2Support"
+          }
+        },
+        {
+          "type": "notification",
+          "channel": "teams",
+          "onFailure": {
+            "message": "🔴 CRITICAL: Service {{serviceName}} failed to restart on {{deviceName}}",
+            "mentions": ["@oncall-tech"],
+            "actionButtons": [
+              {
+                "text": "View Ticket",
+                "url": "{{ticketUrl}}"
+              },
+              {
+                "text": "Remote Access",
+                "url": "{{remoteAccessUrl}}"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Handle High CPU",
+      "description": "Analyze and remediate high CPU usage",
+      "enabled": true,
+      "priority": 2,
+      "trigger": {
+        "type": "alert",
+        "conditions": {
+          "alertType": "CPU_HIGH",
+          "severity": ["HIGH"],
+          "threshold": {
+            "cpuPercent": 90,
+            "duration": 300
+          }
+        }
+      },
+      "actions": [
+        {
+          "type": "execute_script",
+          "scriptId": "Analyze-HighCPU",
+          "parameters": {
+            "topProcesses": 10,
+            "killIfOver": 95,
+            "excludeProcesses": ["System", "svchost", "csrss"],
+            "collectDiagnostics": true
+          },
+          "timeout": 180,
+          "retries": 1
+        },
+        {
+          "type": "update_ticket",
+          "always": {
+            "addNote": "CPU Analysis Report:\n{{processReport}}\nTop Process: {{topProcess}} ({{cpuUsage}}%)"
+          },
+          "onSuccess": {
+            "addNote": "High CPU issue resolved. {{action}} taken.",
+            "status": "Resolved"
+          },
+          "onFailure": {
+            "addNote": "Unable to automatically resolve high CPU. Manual review required.",
+            "assignTo": "{{primaryTech}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Retry Failed Backup",
+      "description": "Attempt to retry failed backup jobs",
+      "enabled": true,
+      "priority": 1,
+      "trigger": {
+        "type": "alert",
+        "conditions": {
+          "alertType": "BACKUP_FAILED",
+          "severity": ["HIGH", "CRITICAL"]
+        }
+      },
+      "actions": [
+        {
+          "type": "execute_script",
+          "scriptId": "Retry-Backup",
+          "parameters": {
+            "backupJob": "{{jobName}}",
+            "retryType": "incremental",
+            "verifySpace": true,
+            "notifyOnStart": true
+          },
+          "timeout": 600,
+          "retries": 1
+        },
+        {
+          "type": "update_ticket",
+          "onSuccess": {
+            "addNote": "Backup completed successfully on retry.\nJob: {{jobName}}\nDuration: {{duration}}\nSize: {{backupSize}}",
+            "closeTicket": true,
+            "status": "Resolved"
+          },
+          "onFailure": {
+            "addNote": "CRITICAL: Backup retry failed.\nJob: {{jobName}}\nError: {{error}}\nImmediate attention required!",
+            "escalate": true,
+            "priority": "Critical",
+            "assignTo": "BackupTeam"
+          }
+        },
+        {
+          "type": "notification",
+          "channel": "teams",
+          "always": {
+            "message": "Backup retry initiated for {{jobName}}"
+          },
+          "onFailure": {
+            "message": "🔴 CRITICAL BACKUP FAILURE: {{jobName}} on {{deviceName}}",
+            "mentions": ["@backup-team", "@manager"],
+            "urgency": "high"
+          }
+        }
+      ]
+    }
+  ],
+  "globalSettings": {
+    "defaultTimeout": 300,
+    "maxRetries": 3,
+    "notificationChannels": {
+      "teams": {
+        "enabled": true,
+        "webhookUrl": "{{MS_TEAMS_WEBHOOK_URL}}",
+        "defaultChannel": "Network Operations Center"
+      }
+    },
+    "escalationChain": [
+      {
+        "level": 1,
+        "assignTo": "primaryTech",
+        "waitMinutes": 30
+      },
+      {
+        "level": 2,
+        "assignTo": "Level2Support",
+        "waitMinutes": 60,
+        "notify": ["teams"]
+      },
+      {
+        "level": 3,
+        "assignTo": "Manager",
+        "waitMinutes": 120,
+        "notify": ["teams", "email", "phone"]
+      }
+    ],
+    "workingHours": {
+      "enabled": true,
+      "timezone": "America/New_York",
+      "businessHours": {
+        "start": "08:00",
+        "end": "18:00"
+      },
+      "businessDays": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+      "afterHoursBehavior": "escalate_immediately"
+    }
+  }
+}

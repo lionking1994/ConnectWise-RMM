@@ -3,29 +3,31 @@ version: '3.8'
 services:
   postgres:
     image: postgres:15-alpine
+    container_name: rmm-postgres
     environment:
-      POSTGRES_DB: rmm_integration
-      POSTGRES_USER: rmm_user
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-rmm_secure_pass_2024}
+      POSTGRES_USER: ${DB_USER:-rmm_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-rmm_password}
+      POSTGRES_DB: ${DB_NAME:-rmm_platform}
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/src/database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./backend/src/database/init.sql:/docker-entrypoint-initdb.d/01-init.sql
     networks:
-      - rmm_network
+      - rmm-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U rmm_user -d rmm_integration"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-rmm_user} -d ${DB_NAME:-rmm_platform}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   redis:
     image: redis:7-alpine
+    container_name: rmm-redis
     ports:
       - "6379:6379"
     networks:
-      - rmm_network
+      - rmm-network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -36,64 +38,78 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    ports:
-      - "3001:3001"
+    container_name: rmm-backend
     environment:
       NODE_ENV: ${NODE_ENV:-development}
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: rmm_integration
-      DB_USER: rmm_user
-      DB_PASSWORD: ${DB_PASSWORD:-rmm_secure_pass_2024}
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      JWT_SECRET: ${JWT_SECRET:-your_jwt_secret_key_2024}
+      PORT: ${BACKEND_PORT:-3001}
+      DATABASE_URL: postgresql://${DB_USER:-rmm_user}:${DB_PASSWORD:-rmm_password}@postgres:5432/${DB_NAME:-rmm_platform}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-your-secret-key-change-in-production}
+      # ConnectWise Configuration
       CONNECTWISE_API_URL: ${CONNECTWISE_API_URL}
       CONNECTWISE_COMPANY_ID: ${CONNECTWISE_COMPANY_ID}
       CONNECTWISE_PUBLIC_KEY: ${CONNECTWISE_PUBLIC_KEY}
       CONNECTWISE_PRIVATE_KEY: ${CONNECTWISE_PRIVATE_KEY}
+      CONNECTWISE_CLIENT_ID: ${CONNECTWISE_CLIENT_ID}
+      # N-able Configuration
       NABLE_API_URL: ${NABLE_API_URL}
       NABLE_API_KEY: ${NABLE_API_KEY}
+      NABLE_API_SECRET: ${NABLE_API_SECRET}
+      # Teams Configuration
+      MS_TEAMS_WEBHOOK_URL: ${MS_TEAMS_WEBHOOK_URL}
+      # Email Configuration (optional)
       SMTP_HOST: ${SMTP_HOST}
       SMTP_PORT: ${SMTP_PORT:-587}
       SMTP_USER: ${SMTP_USER}
       SMTP_PASS: ${SMTP_PASS}
-      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-      TEAMS_WEBHOOK_URL: ${TEAMS_WEBHOOK_URL}
+      # Automation Settings
+      AUTOMATION_CONCURRENCY: ${AUTOMATION_CONCURRENCY:-5}
+      SIMULATE_SCRIPTS: ${SIMULATE_SCRIPTS:-false}
+    ports:
+      - "${BACKEND_PORT:-3001}:3001"
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    volumes:
-      - ./backend:/app
-      - /app/node_modules
     networks:
-      - rmm_network
-    command: npm run dev
+      - rmm-network
+    command: >
+      sh -c "
+        echo 'Waiting for database to be ready...' &&
+        sleep 5 &&
+        npm run migrate &&
+        npm run seed:minimal &&
+        npm run dev
+      "
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    ports:
-      - "3000:3000"
+    container_name: rmm-frontend
     environment:
-      REACT_APP_API_URL: http://localhost:3001
-    depends_on:
-      - backend
+      NODE_ENV: ${NODE_ENV:-development}
+      REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:3001}
+      REACT_APP_WS_URL: ${REACT_APP_WS_URL:-ws://localhost:3001}
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
     volumes:
       - ./frontend:/app
       - /app/node_modules
+    depends_on:
+      - backend
     networks:
-      - rmm_network
+      - rmm-network
     command: npm start
+
+networks:
+  rmm-network:
+    driver: bridge
 
 volumes:
   postgres_data:
-
-networks:
-  rmm_network:
-    driver: bridge
-
-
+    driver: local

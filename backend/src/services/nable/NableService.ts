@@ -193,24 +193,173 @@ export class NableService {
 
   async runRemediationScript(
     deviceId: string,
-    scriptType: 'disk_cleanup' | 'service_restart' | 'update_install' | 'system_scan' | 'custom',
-    customScriptId?: string,
+    scriptName: string,
+    ticketNumber?: string,
     parameters?: Record<string, any>
-  ): Promise<ScriptExecutionResult> {
+  ): Promise<any> {
+    // Enhanced script mapping with more options
     const scriptMap: Record<string, string> = {
+      'cleanup-disk': 'SCRIPT_DISK_CLEANUP',
       'disk_cleanup': 'SCRIPT_DISK_CLEANUP',
+      'restart-iis': 'SCRIPT_IIS_RESTART',
+      'restart-service': 'SCRIPT_SERVICE_RESTART',
       'service_restart': 'SCRIPT_SERVICE_RESTART',
+      'clear-cache': 'SCRIPT_CLEAR_CACHE',
+      'install-updates': 'SCRIPT_WINDOWS_UPDATE',
       'update_install': 'SCRIPT_WINDOWS_UPDATE',
+      'check-disk': 'SCRIPT_CHKDSK',
+      'reset-network': 'SCRIPT_NETWORK_RESET',
       'system_scan': 'SCRIPT_SYSTEM_SCAN'
     };
 
-    const scriptId = scriptType === 'custom' ? customScriptId! : scriptMap[scriptType];
+    const scriptId = scriptMap[scriptName] || scriptName;
     
-    if (!scriptId) {
-      throw new Error(`Invalid script type or missing custom script ID`);
+    logger.info(`Running remediation script '${scriptName}' (ID: ${scriptId}) on device ${deviceId}`);
+    
+    // Include ticket number in parameters for tracking
+    const enhancedParams = {
+      ...parameters,
+      ticketNumber,
+      triggeredBy: 'automation'
+    };
+    
+    try {
+      // Execute the script
+      const result = await this.executeScript(deviceId, scriptId, enhancedParams);
+      
+      // For development/testing, simulate detailed output
+      if (!result.output && (process.env.NODE_ENV === 'development' || process.env.SIMULATE_SCRIPTS === 'true')) {
+        return this.simulateScriptOutput(scriptName, result);
+      }
+      
+      // Parse and enhance the result
+      return {
+        success: result.status === 'Completed' && (result.exitCode === 0 || result.exitCode === 3010),
+        executionId: result.executionId,
+        output: result.output,
+        errorOutput: result.errorMessage,
+        exitCode: result.exitCode || 0,
+        startTime: result.startTime,
+        endTime: result.endTime
+      };
+    } catch (error: any) {
+      logger.error(`Script execution failed: ${error.message}`);
+      throw error;
     }
-
-    return this.executeScript(deviceId, scriptId, parameters);
+  }
+  
+  /**
+   * Get script execution status with enhanced details
+   */
+  async getScriptStatus(deviceId: string, executionId: string): Promise<any> {
+    try {
+      const result = await this.getScriptExecutionStatus(executionId);
+      
+      return {
+        completed: result.status === 'Completed' || result.status === 'Failed',
+        status: result.status,
+        exitCode: result.exitCode || 0,
+        output: result.output || '',
+        errorOutput: result.errorMessage || '',
+        actions: this.parseScriptActions(result.output)
+      };
+    } catch (error) {
+      logger.error(`Failed to get script status: ${error}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Parse script output to extract actions taken
+   */
+  private parseScriptActions(output: string): string[] {
+    const actions: string[] = [];
+    
+    // Parse common action patterns
+    const patterns = [
+      /cleared:\s*(.+)/gi,
+      /deleted:\s*(.+)/gi,
+      /restarted:\s*(.+)/gi,
+      /installed:\s*(.+)/gi,
+      /updated:\s*(.+)/gi,
+      /fixed:\s*(.+)/gi
+    ];
+    
+    patterns.forEach(pattern => {
+      const matches = output.matchAll(pattern);
+      for (const match of matches) {
+        actions.push(match[0]);
+      }
+    });
+    
+    return actions;
+  }
+  
+  /**
+   * Simulate script output for testing
+   */
+  private simulateScriptOutput(scriptName: string, baseResult: ScriptExecutionResult): any {
+    const simulations: Record<string, any> = {
+      'cleanup-disk': {
+        output: `Disk Cleanup Completed Successfully
+Cleared: 22.3 GB
+- Windows Temp Files: 5.2 GB
+- IIS Logs: 8.7 GB
+- SQL Transaction Logs: 6.4 GB
+- Recycle Bin: 2.0 GB
+Current usage: 71%
+Free space: 89 GB`,
+        exitCode: 0,
+        success: true
+      },
+      'restart-iis': {
+        output: `IIS Service Restart Completed
+Stopping IIS Admin Service... Done
+Stopping World Wide Web Publishing Service... Done
+Starting IIS Admin Service... Started
+Starting World Wide Web Publishing Service... Started
+All application pools restarted successfully
+Service Status: Running`,
+        exitCode: 0,
+        success: true
+      },
+      'clear-cache': {
+        output: `Cache Clear Operation
+DNS Cache: Flushed successfully
+Browser Caches: Cleared (Chrome, Edge, Firefox)
+Application Caches: Reset
+Cleared 387 cache items
+Total space recovered: 1.2 GB`,
+        exitCode: 0,
+        success: true
+      },
+      'install-updates': {
+        output: `Windows Update Installation
+Checking for updates... Found 3
+Installing KB5001234... Success
+Installing KB5001235... Success
+Installing KB5001236... Success
+Installed: 3 updates
+Pending: 0 updates
+Reboot required: Yes`,
+        exitCode: 3010, // Reboot required
+        success: true
+      }
+    };
+    
+    const simulation = simulations[scriptName] || {
+      output: `Script ${scriptName} executed successfully`,
+      exitCode: 0,
+      success: true
+    };
+    
+    return {
+      ...baseResult,
+      ...simulation,
+      executionId: baseResult.executionId,
+      startTime: baseResult.startTime,
+      endTime: new Date()
+    };
   }
 
   async installPatch(deviceId: string, patchId: string): Promise<void> {
@@ -282,5 +431,3 @@ export class NableService {
     });
   }
 }
-
-

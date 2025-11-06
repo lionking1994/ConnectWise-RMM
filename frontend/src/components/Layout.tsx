@@ -27,6 +27,8 @@ import {
   Logout,
   Person,
   Notifications,
+  Code as ScriptsIcon,
+  ViewList as BoardIcon,
 } from '@mui/icons-material';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -36,6 +38,8 @@ const menuItems = [
   { text: 'Dashboard', icon: <Dashboard />, path: '/dashboard' },
   { text: 'Tickets', icon: <BugReport />, path: '/tickets' },
   { text: 'Automation', icon: <AutoFixHigh />, path: '/automation' },
+  { text: 'Scripts', icon: <ScriptsIcon />, path: '/automation/scripts' },
+  // { text: 'Boards', icon: <BoardIcon />, path: '/boards' },  // Disabled - not needed when N-able creates tickets
   { text: 'Analytics', icon: <Analytics />, path: '/analytics' },
   { text: 'Settings', icon: <Settings />, path: '/settings' },
 ];
@@ -179,6 +183,10 @@ export const Layout: React.FC = () => {
       </Box>
     </Box>
   );
+};
+
+
+
 };
 
 

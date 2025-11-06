@@ -2,105 +2,106 @@ version: '3.8'
 
 services:
   postgres:
-    image: postgres:15-alpine
-    restart: always
+    image: postgres:14-alpine
+    container_name: rmm-postgres-prod
     environment:
-      POSTGRES_DB: ${DB_NAME:-rmm_integration}
-      POSTGRES_USER: ${DB_USER:-rmm_user}
+      POSTGRES_USER: ${DB_USER}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./backend/src/database/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - postgres_data_prod:/var/lib/postgresql/data
+      - ./backend/src/database/init.sql:/docker-entrypoint-initdb.d/01-init.sql
     networks:
-      - rmm_network
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-rmm_user} -d ${DB_NAME:-rmm_integration}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  redis:
-    image: redis:7-alpine
+      - rmm-network-prod
     restart: always
-    command: redis-server --appendonly yes
-    volumes:
-      - redis_data:/data
-    networks:
-      - rmm_network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 30s
+      timeout: 10s
       retries: 5
 
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    restart: always
+      args:
+        NODE_ENV: production
+    container_name: rmm-backend-prod
     environment:
       NODE_ENV: production
-      DB_HOST: postgres
-      DB_PORT: 5432
-      DB_NAME: ${DB_NAME:-rmm_integration}
-      DB_USER: ${DB_USER:-rmm_user}
-      DB_PASSWORD: ${DB_PASSWORD}
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+      PORT: 3001
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@postgres:5432/${DB_NAME}
       JWT_SECRET: ${JWT_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      # ConnectWise Configuration
       CONNECTWISE_API_URL: ${CONNECTWISE_API_URL}
       CONNECTWISE_COMPANY_ID: ${CONNECTWISE_COMPANY_ID}
       CONNECTWISE_PUBLIC_KEY: ${CONNECTWISE_PUBLIC_KEY}
       CONNECTWISE_PRIVATE_KEY: ${CONNECTWISE_PRIVATE_KEY}
+      CONNECTWISE_CLIENT_ID: ${CONNECTWISE_CLIENT_ID}
+      CW_BOARD_ID: ${CW_BOARD_ID}
+      CW_COMPANY_ID: ${CW_COMPANY_ID}
+      # N-able Configuration
       NABLE_API_URL: ${NABLE_API_URL}
       NABLE_API_KEY: ${NABLE_API_KEY}
+      NABLE_API_SECRET: ${NABLE_API_SECRET}
+      # Teams Configuration
+      MS_TEAMS_WEBHOOK_URL: ${MS_TEAMS_WEBHOOK_URL}
+      # Email Configuration
       SMTP_HOST: ${SMTP_HOST}
       SMTP_PORT: ${SMTP_PORT}
       SMTP_USER: ${SMTP_USER}
       SMTP_PASS: ${SMTP_PASS}
-      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-      TEAMS_WEBHOOK_URL: ${TEAMS_WEBHOOK_URL}
+      # Automation Settings
+      AUTOMATION_CONCURRENCY: ${AUTOMATION_CONCURRENCY:-10}
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     networks:
-      - rmm_network
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      - rmm-network-prod
+    restart: always
+    command: >
+      sh -c "
+        npm run migrate &&
+        npm run seed:minimal &&
+        npm start
+      "
 
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
       args:
-        REACT_APP_API_URL: ${FRONTEND_API_URL:-/api}
+        NODE_ENV: production
+        REACT_APP_API_URL: ${REACT_APP_API_URL}
+        REACT_APP_WS_URL: ${REACT_APP_WS_URL}
+    container_name: rmm-frontend-prod
+    environment:
+      NODE_ENV: production
+    networks:
+      - rmm-network-prod
     restart: always
+
+  nginx:
+    image: nginx:alpine
+    container_name: rmm-nginx-prod
     ports:
-      - "80:3000"
-      - "443:3443"
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
     depends_on:
       - backend
+      - frontend
     networks:
-      - rmm_network
-    volumes:
-      - ./ssl:/etc/nginx/ssl:ro
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-volumes:
-  postgres_data:
-  redis_data:
+      - rmm-network-prod
+    restart: always
 
 networks:
-  rmm_network:
+  rmm-network-prod:
     driver: bridge
 
-
+volumes:
+  postgres_data_prod:
+    driver: local

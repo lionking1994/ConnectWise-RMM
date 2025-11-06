@@ -1,5 +1,5 @@
 import React from 'react';
-import { Paper, Typography, List, ListItem, ListItemText, Chip } from '@mui/material';
+import { Paper, Typography, List, ListItem, ListItemText, Chip, Box, Stack } from '@mui/material';
 
 export const RecentTickets: React.FC = () => {
   // Mock data - would come from API
@@ -16,16 +16,19 @@ export const RecentTickets: React.FC = () => {
       </Typography>
       <List>
         {tickets.map((ticket) => (
-          <ListItem key={ticket.id}>
+          <ListItem 
+            key={ticket.id}
+            secondaryAction={
+              <Chip 
+                label={ticket.priority} 
+                size="small" 
+                color={ticket.priority === 'critical' ? 'error' : 'warning'}
+              />
+            }
+          >
             <ListItemText 
               primary={ticket.title}
-              secondary={
-                <Chip 
-                  label={ticket.priority} 
-                  size="small" 
-                  color={ticket.priority === 'critical' ? 'error' : 'warning'}
-                />
-              }
+              secondary={`Status: ${ticket.status}`}
             />
           </ListItem>
         ))}

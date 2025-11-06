@@ -32,7 +32,6 @@ export function initializeCronJobs(): void {
     }
   });
 
-  logger.info('Cron jobs initialized');
 }
 
 

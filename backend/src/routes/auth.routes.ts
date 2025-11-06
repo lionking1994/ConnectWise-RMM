@@ -5,9 +5,9 @@ import jwt from 'jsonwebtoken';
 import { AppDataSource } from '../database/dataSource';
 import { User } from '../entities/User';
 import { logger } from '../utils/logger';
+import { authMiddleware, AuthRequest } from '../middleware/auth';
 
 export const authRouter = Router();
-const userRepository = AppDataSource.getRepository(User);
 
 // Login
 authRouter.post('/login',
@@ -24,6 +24,7 @@ authRouter.post('/login',
 
       const { email, password } = req.body;
 
+      const userRepository = AppDataSource.getRepository(User);
       const user = await userRepository.findOne({ where: { email } });
       if (!user) {
         return res.status(401).json({ message: 'Invalid credentials' });
@@ -84,6 +85,7 @@ authRouter.post('/refresh',
 
       const decoded = jwt.verify(refreshToken, process.env.JWT_SECRET || 'secret') as any;
       
+      const userRepository = AppDataSource.getRepository(User);
       const user = await userRepository.findOne({ 
         where: { id: decoded.id, refreshToken } 
       });
@@ -105,6 +107,31 @@ authRouter.post('/refresh',
   }
 );
 
+// Get current user
+authRouter.get('/me', authMiddleware, async (req: AuthRequest, res, next) => {
+  try {
+    const user = req.user;
+    if (!user) {
+      return res.status(401).json({ message: 'Not authenticated' });
+    }
+
+    res.json({
+      id: user.id,
+      email: user.email,
+      username: user.username,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      role: user.role,
+      permissions: user.permissions,
+      profilePicture: user.profilePicture,
+      phoneNumber: user.phoneNumber,
+      preferences: user.preferences
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Logout
 authRouter.post('/logout', async (req, res, next) => {
   try {
@@ -113,6 +140,7 @@ authRouter.post('/logout', async (req, res, next) => {
       const token = authHeader.split(' ')[1];
       const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret') as any;
       
+      const userRepository = AppDataSource.getRepository(User);
       await userRepository.update(decoded.id, { refreshToken: null });
       logger.info(`User logged out: ${decoded.email}`);
     }

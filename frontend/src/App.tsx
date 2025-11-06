@@ -25,6 +25,13 @@ import { Users } from './pages/Users';
 import { ApiConfig } from './pages/ApiConfig';
 import { Notifications } from './pages/Notifications';
 import { AuditLog } from './pages/AuditLog';
+// import { NotificationSettings } from './pages/NotificationSettings';
+// import { Reports } from './pages/Reports';
+// import { AutomationDesigner } from './pages/AutomationDesigner';
+// import { AlertManagement } from './pages/AlertManagement';
+import { ScriptManager } from './pages/ScriptManager';
+import { AlertScriptMapping } from './pages/AlertScriptMapping';
+// import { BoardManagement } from './pages/BoardManagement';  // Disabled - not needed
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -55,15 +62,23 @@ function App() {
                       <Route index element={<Navigate to="/dashboard" replace />} />
                       <Route path="dashboard" element={<Dashboard />} />
                       <Route path="tickets" element={<Tickets />} />
+                      <Route path="tickets/new" element={<TicketDetail />} />
+                      <Route path="tickets/:id/edit" element={<TicketDetail />} />
                       <Route path="tickets/:id" element={<TicketDetail />} />
                       <Route path="automation" element={<Automation />} />
                       <Route path="automation/rules/new" element={<RuleEditor />} />
                       <Route path="automation/rules/:id" element={<RuleEditor />} />
+                      {/* <Route path="automation/designer" element={<AutomationDesigner />} /> */}
+                      <Route path="automation/scripts" element={<ScriptManager />} />
+                      <Route path="automation/alert-mappings" element={<AlertScriptMapping />} />
+            {/* <Route path="alerts" element={<AlertManagement />} /> */}
+                      {/* <Route path="boards" element={<BoardManagement />} />  // Disabled - not needed when N-able creates tickets */}
                       <Route path="analytics" element={<Analytics />} />
+                      {/* <Route path="reports" element={<Reports />} /> */}
                       <Route path="settings" element={<Settings />} />
                       <Route path="settings/users" element={<Users />} />
                       <Route path="settings/api" element={<ApiConfig />} />
-                      <Route path="settings/notifications" element={<Notifications />} />
+                      {/* <Route path="settings/notifications" element={<NotificationSettings />} /> */}
                       <Route path="audit-log" element={<AuditLog />} />
                     </Route>
                   </Routes>
