@@ -84,33 +84,50 @@ export class AutomationEngine {
    * Attempt automatic remediation for known alert types
    */
   private async attemptAutoRemediation(ticket: Ticket, alert: any): Promise<void> {
+    // Check if auto-remediation is enabled
+    const autoRemediationEnabled = process.env.AUTO_REMEDIATION_ENABLED !== 'false';
+    if (!autoRemediationEnabled) {
+      logger.info('Auto-remediation disabled by configuration');
+      return;
+    }
+
     // Map alert types to remediation scripts
-    const remediationMap: Record<string, string> = {
-      'disk_space': 'cleanup-disk',
-      'disk_full': 'cleanup-disk',
-      'disk_space_low': 'cleanup-disk',
-      'service_stopped': 'restart-service',
-      'iis_stopped': 'restart-iis',
-      'high_memory': 'clear-cache',
-      'windows_updates': 'install-updates',
-      'network_issue': 'reset-network'
+    const remediationMap: Record<string, { script: string; params?: any }> = {
+      'disk_space': { script: 'disk_cleanup' },
+      'disk_full': { script: 'disk_cleanup' },
+      'disk_space_low': { script: 'disk_cleanup' },
+      'DISK_SPACE_LOW': { 
+        script: 'disk_cleanup',
+        params: { driveLetter: alert.driveLetter || 'C:' }
+      },
+      'service_stopped': { script: 'service_restart' },
+      'SERVICE_STOPPED': { 
+        script: 'service_restart',
+        params: { serviceName: alert.serviceName }
+      },
+      'iis_stopped': { script: 'restart-iis' },
+      'high_memory': { script: 'clear_temp_files' },
+      'HIGH_MEMORY': { script: 'clear_temp_files' },
+      'HIGH_CPU': { script: 'check_services' },
+      'windows_updates': { script: 'windows_update' },
+      'network_issue': { script: 'reset-network' }
     };
     
-    const alertType = alert.alertType?.toLowerCase() || alert.type?.toLowerCase();
-    const scriptName = remediationMap[alertType];
+    const alertType = alert.alertType || alert.type;
+    const remediation = remediationMap[alertType] || remediationMap[alertType?.toLowerCase()];
     
-    if (scriptName && ticket.deviceId) {
-      logger.info(`Attempting auto-remediation for ${alertType} with script ${scriptName}`);
+    if (remediation && ticket.deviceId) {
+      logger.info(`Attempting auto-remediation for ${alertType} with script ${remediation.script}`);
       
       try {
-        // Import ScriptExecutionService dynamically to avoid circular dependency
-        const { ScriptExecutionService } = await import('../ScriptExecutionService');
-        const scriptService = ScriptExecutionService.getInstance();
+        // Import NableService dynamically
+        const { NableService } = await import('../nable/NableService');
+        const nableService = NableService.getInstance();
         
         // Add note that remediation is starting
         const note = {
           id: `note-${Date.now()}`,
-          text: `🚀 Automatic remediation initiated: ${scriptName}`,
+          text: `🚀 Automatic remediation initiated: ${remediation.script}`,
           author: 'Automation Engine',
           timestamp: new Date(),
           type: 'automation' as const
@@ -118,19 +135,38 @@ export class AutomationEngine {
         ticket.notes = [...(ticket.notes || []), note];
         await this.ticketRepository.save(ticket);
         
-        // Execute remediation script
-        const result = await scriptService.executeScript({
-          scriptId: scriptName,
-          scriptName: scriptName,
-          scriptType: 'powershell' as const,
-          deviceId: ticket.deviceId || '',
-          parameters: {
-            ticketId: ticket.id,
-            ticketNumber: ticket.ticketNumber
-          }
-        });
+        // Execute remediation script through N-able
+        const result = await nableService.executeRemediation(
+          ticket.deviceId,
+          alertType,
+          remediation.params || {}
+        );
         
-        logger.info(`Auto-remediation ${result.status === 'completed' ? 'succeeded' : 'failed'} for ticket ${ticket.ticketNumber}`);
+        logger.info(`Auto-remediation ${result.success ? 'succeeded' : 'failed'} for ticket ${ticket.ticketNumber}`);
+        
+        // Add result note
+        const resultNote = {
+          id: `note-${Date.now()}`,
+          text: result.success 
+            ? `✅ Auto-remediation successful: ${result.output || 'Issue resolved'}`
+            : `❌ Auto-remediation failed: ${result.error || 'Unknown error'}`,
+          author: 'Automation Engine',
+          timestamp: new Date(),
+          type: 'automation' as const
+        };
+        ticket.notes = [...(ticket.notes || []), resultNote];
+        await this.ticketRepository.save(ticket);
+        
+        // Update ConnectWise ticket if we have the ticket number
+        const cwTicketNumber = alert.cwTicketNumber || alert.connectwiseTicketId || 
+                              ticket.metadata?.customFields?.cwTicketNumber;
+        
+        if (cwTicketNumber && result.success) {
+          await this.closeConnectWiseTicket(ticket, result);
+        } else if (cwTicketNumber) {
+          await this.updateConnectWiseTicket(ticket, false, result);
+        }
+        
       } catch (error) {
         logger.error(`Auto-remediation failed for ticket ${ticket.ticketNumber}:`, error);
         
@@ -144,6 +180,15 @@ export class AutomationEngine {
         };
         ticket.notes = [...(ticket.notes || []), note];
         await this.ticketRepository.save(ticket);
+        
+        // Update ConnectWise ticket with failure
+        const cwTicketNumber = alert.cwTicketNumber || alert.connectwiseTicketId;
+        if (cwTicketNumber) {
+          await this.updateConnectWiseTicket(ticket, false, {
+            success: false,
+            error: error instanceof Error ? error.message : 'Unknown error'
+          });
+        }
       }
     }
   }
@@ -346,23 +391,205 @@ export class AutomationEngine {
   }
 
   private async executeScript(params: any, ticket: Ticket): Promise<any> {
-    if (!ticket.deviceId) {
+    const { NableService } = await import('../nable/NableService');
+    const nableService = NableService.getInstance();
+    
+    const scriptName = params.scriptName || params.scriptId || 'Unknown Script';
+    const deviceId = params.deviceId || ticket.deviceId;
+    
+    if (!deviceId) {
       throw new Error('No device associated with ticket');
     }
     
-    const result = await this.nable.executeScript(
-      ticket.deviceId,
-      params.scriptId,
-      params.parameters
-    );
+    const scriptParams = params.scriptParams || params.parameters || {};
     
-    // Add script output to ticket notes
-    await this.addNote(ticket, {
-      text: `Automation: Executed script ${params.scriptId}\nOutput: ${result.output}`,
-      type: 'automation'
-    });
+    logger.info(`Executing script: ${scriptName} on device: ${deviceId}`);
     
-    return result;
+    try {
+      // Execute the remediation script through N-able
+      const result = await nableService.executeScript(
+        deviceId,
+        scriptName,
+        scriptParams
+      );
+      
+      // Add script output to ticket notes
+      await this.addNote(ticket, {
+        text: `Automation: Executed script ${scriptName}
+Status: ${result.success ? '✅ Success' : '❌ Failed'}
+Output: ${result.output || result.error || 'No output'}
+Exit Code: ${result.exitCode || 0}`,
+        type: 'automation'
+      });
+      
+      // Handle success/failure actions
+      if (result.success && params.onSuccess) {
+        await this.handlePostScriptAction(ticket, params.onSuccess, true, result);
+      } else if (!result.success && params.onFailure) {
+        await this.handlePostScriptAction(ticket, params.onFailure, false, result);
+      }
+      
+      // If script was successful and auto-close is enabled, close the ConnectWise ticket
+      if (result.success && process.env.AUTO_CLOSE_ON_SUCCESS === 'true') {
+        await this.closeConnectWiseTicket(ticket, result);
+      }
+      
+      return result;
+    } catch (error) {
+      logger.error(`Script execution failed for ${scriptName}:`, error);
+      
+      // Add error note
+      await this.addNote(ticket, {
+        text: `Automation: Script execution failed - ${scriptName}
+Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        type: 'automation'
+      });
+      
+      // Handle failure action
+      if (params.onFailure) {
+        await this.handlePostScriptAction(ticket, params.onFailure, false, {
+          success: false,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+      }
+      
+      throw error;
+    }
+  }
+
+  private async handlePostScriptAction(
+    ticket: Ticket,
+    action: string,
+    success: boolean,
+    result: any
+  ): Promise<void> {
+    logger.info(`Handling post-script action: ${action} (success: ${success})`);
+    
+    switch (action) {
+      case 'close_ticket':
+        if (success) {
+          await this.closeConnectWiseTicket(ticket, result);
+        }
+        break;
+        
+      case 'escalate':
+        if (!success) {
+          await this.escalateTicket(ticket, {});
+        }
+        break;
+        
+      case 'update_ticket':
+        await this.updateConnectWiseTicket(ticket, success, result);
+        break;
+        
+      case 'add_note':
+        await this.addNote(ticket, {
+          text: success ?
+            `✅ Automated remediation successful\n${result.output || 'Issue resolved'}` :
+            `❌ Automated remediation failed\n${result.error || 'Unknown error'}`,
+          type: 'automation'
+        });
+        break;
+        
+      case 'send_teams_message':
+        await this.sendNotification({
+          channel: 'teams',
+          message: success ?
+            `✅ Automation Success - Ticket ${ticket.ticketNumber}\n${result.output || 'Issue resolved'}` :
+            `⚠️ Automation Failed - Ticket ${ticket.ticketNumber}\n${result.error || 'Unknown error'}`
+        }, ticket);
+        break;
+    }
+  }
+
+  private async closeConnectWiseTicket(ticket: Ticket, result: any): Promise<void> {
+    try {
+      const { ConnectWiseService } = await import('../connectwise/ConnectWiseService');
+      const cwService = ConnectWiseService.getInstance();
+      
+      // Get ConnectWise ticket ID from various possible locations
+      const cwTicketId = ticket.metadata?.customFields?.cwTicketNumber || 
+                        ticket.metadata?.connectwiseData?.id ||
+                        ticket.externalId;
+      
+      if (cwTicketId) {
+        // Update and close the ConnectWise ticket
+        await cwService.updateTicket(cwTicketId, [
+          {
+            op: 'replace',
+            path: '/status/id',
+            value: 5 // Closed status ID (may vary per ConnectWise instance)
+          },
+          {
+            op: 'add',
+            path: '/resolution',
+            value: `Automated remediation completed successfully.
+Script Output: ${result.output || 'Issue resolved'}
+Resolved by: RMM Automation Platform
+Resolution Time: ${new Date().toISOString()}`
+          }
+        ]);
+        
+        // Add a final note to the ticket
+        await cwService.addTicketNote(cwTicketId, {
+          text: `✅ Ticket automatically closed by RMM automation.
+Remediation successful.
+Output: ${result.output || 'Issue resolved'}`,
+          detailDescriptionFlag: false,
+          internalAnalysisFlag: true
+        });
+        
+        logger.info(`ConnectWise ticket ${cwTicketId} closed successfully`);
+        
+        // Update local ticket status
+        ticket.status = TicketStatus.CLOSED;
+        ticket.closedAt = new Date();
+        await this.ticketRepository.save(ticket);
+      }
+    } catch (error) {
+      logger.error('Failed to close ConnectWise ticket:', error);
+    }
+  }
+
+  private async updateConnectWiseTicket(ticket: Ticket, success: boolean, result: any): Promise<void> {
+    try {
+      const { ConnectWiseService } = await import('../connectwise/ConnectWiseService');
+      const cwService = ConnectWiseService.getInstance();
+      
+      const cwTicketId = ticket.metadata?.customFields?.cwTicketNumber || 
+                        ticket.metadata?.connectwiseData?.id ||
+                        ticket.externalId;
+      
+      if (cwTicketId) {
+        // Update ticket status based on success
+        const statusId = success ? 8 : 2; // 8 = Resolved, 2 = In Progress (adjust as needed)
+        
+        await cwService.updateTicket(cwTicketId, [
+          {
+            op: 'replace',
+            path: '/status/id',
+            value: statusId
+          }
+        ]);
+        
+        // Add note about the automation attempt
+        await cwService.addTicketNote(cwTicketId, {
+          text: success ?
+            `✅ Automated remediation successful\n${result.output || 'Issue resolved'}` :
+            `⚠️ Automated remediation attempt failed\n${result.error || 'Manual intervention required'}`,
+          detailDescriptionFlag: false,
+          internalAnalysisFlag: true
+        });
+        
+        logger.info(`ConnectWise ticket ${cwTicketId} updated with automation results`);
+        
+        // Update local ticket
+        ticket.status = success ? TicketStatus.RESOLVED : TicketStatus.IN_PROGRESS;
+        await this.ticketRepository.save(ticket);
+      }
+    } catch (error) {
+      logger.error('Failed to update ConnectWise ticket:', error);
+    }
   }
 
   private async updateTicket(ticket: Ticket, params: any): Promise<void> {
@@ -461,7 +688,6 @@ export class AutomationEngine {
     return await this.nable.runRemediationScript(
       ticket.deviceId,
       'disk_cleanup',
-      undefined,
       params
     );
   }
@@ -477,7 +703,6 @@ export class AutomationEngine {
       return await this.nable.runRemediationScript(
         ticket.deviceId,
         'update_install',
-        undefined,
         params
       );
     }

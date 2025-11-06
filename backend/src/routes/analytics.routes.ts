@@ -292,20 +292,6 @@ router.get('/dashboard-stats', async (req: Request, res: Response) => {
   }
 });
 
-export const analyticsRouter = router;
-    for (let i = 0; i < days; i++) {
-      mockTrends.push({
-        date: dayNames[i % 7],
-        created: Math.floor(Math.random() * 30) + 30,
-        resolved: Math.floor(Math.random() * 25) + 25,
-        escalated: Math.floor(Math.random() * 5) + 2
-      });
-    }
-    
-    res.json({ trends: mockTrends });
-  }
-});
-
 /**
  * GET /api/analytics/automation-metrics
  * Get automation performance metrics

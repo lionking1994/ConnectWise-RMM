@@ -619,18 +619,18 @@ export const RuleEditor: React.FC = () => {
                                 </Select>
                               </FormControl>
                             ) : (
-                              <TextField
-                                fullWidth
-                                size="small"
-                                label="Value"
-                                value={condition.value}
-                                onChange={(e) => handleUpdateCondition(index, 'value', e.target.value)}
-                                disabled={condition.operator === 'is_empty' || condition.operator === 'is_not_empty'}
+                            <TextField
+                              fullWidth
+                              size="small"
+                              label="Value"
+                              value={condition.value}
+                              onChange={(e) => handleUpdateCondition(index, 'value', e.target.value)}
+                              disabled={condition.operator === 'is_empty' || condition.operator === 'is_not_empty'}
                                 helperText={
                                   condition.operator === 'in' ? 'Comma-separated values' : 
                                   (condition.field === 'cpuPercent' || condition.field === 'memoryPercent' || condition.field === 'diskPercent') ? 'Number (0-100)' : ''
                                 }
-                              />
+                            />
                             )}
                           </Grid>
                           <Grid item xs={1}>

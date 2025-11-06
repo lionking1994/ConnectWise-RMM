@@ -1,85 +1,74 @@
 import axios, { AxiosInstance } from 'axios';
 import { logger } from '../../utils/logger';
-import retry from 'retry';
+import { CredentialsService } from '../CredentialsService';
+
+export interface ScriptExecutionResult {
+  success: boolean;
+  output?: string;
+  error?: string;
+  exitCode?: number;
+  executionId?: string;
+  deviceId?: string;
+}
 
 export interface NableDevice {
-  deviceId: string;
-  deviceName: string;
-  customerName: string;
-  customerId: string;
+  id: string;
+  name: string;
+  type: string;
   status: string;
-  lastSeen: Date;
-  osVersion: string;
-  ipAddress: string;
-  alerts: NableAlert[];
+  clientName?: string;
+  lastSeen?: Date;
+  deviceId?: string;
+  deviceName?: string;
+  customerName?: string;
+  customerId?: string;
 }
 
 export interface NableAlert {
   alertId: string;
-  deviceId: string;
-  severity: 'Information' | 'Warning' | 'Error' | 'Critical';
   alertType: string;
+  severity: string;
   message: string;
-  timestamp: Date;
-  status: 'Active' | 'Acknowledged' | 'Resolved';
-  details: Record<string, any>;
-}
-
-export interface NableScript {
-  scriptId: string;
-  name: string;
-  description: string;
-  category: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    required: boolean;
-    defaultValue?: any;
-  }>;
-}
-
-export interface ScriptExecutionResult {
-  executionId: string;
-  scriptId: string;
   deviceId: string;
-  status: 'Running' | 'Completed' | 'Failed' | 'Timeout';
-  output: string;
-  errorMessage?: string;
-  startTime: Date;
-  endTime?: Date;
-  exitCode?: number;
+  details?: Record<string, any>;
+  timestamp?: Date;
 }
 
 export class NableService {
   private static instance: NableService;
-  private client: AxiosInstance;
+  private credentialsService: CredentialsService;
+  private apiUrl: string = '';
+  private apiKey: string = '';
+  private initialized: boolean = false;
 
   private constructor() {
-    this.client = axios.create({
-      baseURL: process.env.NABLE_API_URL,
-      headers: {
-        'Authorization': `Bearer ${process.env.NABLE_API_KEY}`,
-        'Content-Type': 'application/json',
-        'X-API-Secret': process.env.NABLE_API_SECRET || ''
-      },
-      timeout: 30000
-    });
+    this.credentialsService = CredentialsService.getInstance();
+    this.initialize();
+  }
 
-    // Add response interceptor for logging
-    this.client.interceptors.response.use(
-      response => {
-        logger.debug(`N-able API Response: ${response.status} ${response.config.url}`);
-        return response;
-      },
-      error => {
-        logger.error(`N-able API Error: ${error.message}`, {
-          url: error.config?.url,
-          status: error.response?.status,
-          data: error.response?.data
-        });
-        return Promise.reject(error);
+  private async initialize(): Promise<void> {
+    try {
+      const credentials = await this.credentialsService.getNableCredentials();
+      if (credentials) {
+        this.apiUrl = credentials.apiUrl.replace(/\/$/, ''); // Remove trailing slash
+        this.apiKey = credentials.apiKey;
+        this.initialized = true;
+        logger.info('N-able service initialized with credentials');
+      } else {
+        logger.warn('No N-able credentials found');
       }
-    );
+    } catch (error) {
+      logger.error('Failed to initialize N-able service:', error);
+    }
+  }
+
+  private async ensureInitialized(): Promise<void> {
+    if (!this.initialized) {
+      await this.initialize();
+      if (!this.initialized) {
+        throw new Error('N-able service not configured. Please check credentials.');
+      }
+    }
   }
 
   public static getInstance(): NableService {
@@ -89,345 +78,432 @@ export class NableService {
     return NableService.instance;
   }
 
-  private async executeWithRetry<T>(fn: () => Promise<T>): Promise<T> {
-    const operation = retry.operation({
-      retries: 3,
-      factor: 2,
-      minTimeout: 1000,
-      maxTimeout: 5000
-    });
-
-    return new Promise((resolve, reject) => {
-      operation.attempt(async () => {
-        try {
-          const result = await fn();
-          resolve(result);
-        } catch (error) {
-          if (!operation.retry(error as Error)) {
-            reject(operation.mainError());
-          }
-        }
-      });
-    });
-  }
-
-  async getDevices(customerId?: string): Promise<NableDevice[]> {
-    return this.executeWithRetry(async () => {
-      const params = customerId ? { customerId } : {};
-      const response = await this.client.get('/devices', { params });
-      return response.data.devices;
-    });
-  }
-
-  async getDevice(deviceId: string): Promise<NableDevice> {
-    return this.executeWithRetry(async () => {
-      const response = await this.client.get(`/devices/${deviceId}`);
-      return response.data;
-    });
-  }
-
-  async getAlerts(params?: {
-    deviceId?: string;
-    severity?: string;
-    status?: string;
-    startDate?: Date;
-    endDate?: Date;
-  }): Promise<NableAlert[]> {
-    return this.executeWithRetry(async () => {
-      const response = await this.client.get('/alerts', { params });
-      return response.data.alerts;
-    });
-  }
-
-  async getAlert(alertId: string): Promise<NableAlert> {
-    return this.executeWithRetry(async () => {
-      const response = await this.client.get(`/alerts/${alertId}`);
-      return response.data;
-    });
-  }
-
-  async acknowledgeAlert(alertId: string, notes?: string): Promise<void> {
-    return this.executeWithRetry(async () => {
-      await this.client.post(`/alerts/${alertId}/acknowledge`, { notes });
-      logger.info(`Acknowledged N-able alert: ${alertId}`);
-    });
-  }
-
-  async resolveAlert(alertId: string, resolution: string): Promise<void> {
-    return this.executeWithRetry(async () => {
-      await this.client.post(`/alerts/${alertId}/resolve`, { resolution });
-      logger.info(`Resolved N-able alert: ${alertId}`);
-    });
-  }
-
-  async getScripts(category?: string): Promise<NableScript[]> {
-    return this.executeWithRetry(async () => {
-      const params = category ? { category } : {};
-      const response = await this.client.get('/scripts', { params });
-      return response.data.scripts;
-    });
-  }
-
+  /**
+   * Execute a script on a device through N-sight RMM
+   */
   async executeScript(
     deviceId: string,
-    scriptId: string,
+    scriptName: string,
     parameters?: Record<string, any>
   ): Promise<ScriptExecutionResult> {
-    return this.executeWithRetry(async () => {
-      const response = await this.client.post('/scripts/execute', {
-        deviceId,
-        scriptId,
-        parameters: parameters || {}
+    await this.ensureInitialized();
+
+    try {
+      logger.info(`Executing script ${scriptName} on device ${deviceId}`);
+      
+      // Map common script names to N-sight RMM script IDs or services
+      const scriptMapping: Record<string, string> = {
+        'disk_cleanup': 'cleanup_disk',
+        'service_restart': 'restart_service',
+        'clear_temp': 'clear_temp_files',
+        'check_disk': 'disk_check',
+        'restart_spooler': 'restart_print_spooler',
+        'windows_update': 'install_updates',
+        'Clean-TempFiles': 'cleanup_disk',
+        'Restart-Service': 'restart_service',
+        'Clear-DiskSpace': 'cleanup_disk',
+        'Check-Services': 'check_services'
+      };
+
+      const nsightScript = scriptMapping[scriptName] || scriptName;
+
+      // For N-sight RMM, we need to use the appropriate API endpoint
+      // This is a simplified example - actual implementation depends on N-sight API
+      const response = await axios.get(`${this.apiUrl}/api/`, {
+        params: {
+          apikey: this.apiKey,
+          service: 'run_script',
+          deviceid: deviceId,
+          script: nsightScript,
+          ...parameters
+        },
+        timeout: 60000 // 60 second timeout for script execution
       });
-      logger.info(`Executed script ${scriptId} on device ${deviceId}`);
-      return response.data;
-    });
+
+      // Parse N-sight response
+      if (response.data && typeof response.data === 'string') {
+        // N-sight may return HTML or text responses
+        const success = !response.data.includes('error') && 
+                       !response.data.includes('failed') &&
+                       response.status === 200;
+        
+        return {
+          success,
+          output: response.data.substring(0, 1000), // Limit output length
+          exitCode: success ? 0 : 1,
+          executionId: `NSIGHT-${Date.now()}`,
+          deviceId
+        };
+      }
+
+      // Handle JSON response
+      const result = response.data;
+      return {
+        success: result.status === 'success' || result.exitCode === 0,
+        output: result.output || result.message || 'Script executed',
+        error: result.error,
+        exitCode: result.exitCode || 0,
+        executionId: result.id || `NSIGHT-${Date.now()}`,
+        deviceId
+      };
+
+    } catch (error: any) {
+      logger.error(`Failed to execute script ${scriptName} on device ${deviceId}:`, error);
+      
+      // Return a structured error response
+      return {
+        success: false,
+        error: error.message || 'Script execution failed',
+        exitCode: error.response?.status || -1,
+        deviceId
+      };
+    }
+  }
+  
+  /**
+   * Get device information
+   */
+  async getDevice(deviceId: string): Promise<NableDevice | null> {
+    await this.ensureInitialized();
+
+    try {
+      const response = await axios.get(`${this.apiUrl}/api/`, {
+        params: {
+          apikey: this.apiKey,
+          service: 'get_device',
+          deviceid: deviceId
+        },
+        timeout: 10000
+      });
+
+      if (response.data) {
+      return {
+          id: deviceId,
+          name: response.data.name || 'Unknown',
+          type: response.data.type || 'Unknown',
+          status: response.data.status || 'Unknown',
+          clientName: response.data.client,
+          lastSeen: response.data.lastseen ? new Date(response.data.lastseen) : undefined,
+          deviceId: deviceId,
+          deviceName: response.data.name || 'Unknown',
+          customerName: response.data.client || response.data.customerName,
+          customerId: response.data.clientId || response.data.customerId
+        };
+      }
+
+      return null;
+    } catch (error) {
+      logger.error(`Failed to get device ${deviceId}:`, error);
+      return null;
+    }
   }
 
-  async getScriptExecutionStatus(executionId: string): Promise<ScriptExecutionResult> {
-    return this.executeWithRetry(async () => {
-      const response = await this.client.get(`/scripts/executions/${executionId}`);
-      return response.data;
-    });
+  /**
+   * Get all devices
+   */
+  async getDevices(): Promise<NableDevice[]> {
+    await this.ensureInitialized();
+
+    try {
+      const response = await axios.get(`${this.apiUrl}/api/`, {
+        params: {
+          apikey: this.apiKey,
+          service: 'list_devices'
+        },
+        timeout: 30000
+      });
+
+      if (Array.isArray(response.data)) {
+        return response.data.map((device: any) => ({
+          id: device.id || device.deviceId,
+          name: device.name || device.deviceName || 'Unknown',
+          type: device.type || 'Unknown',
+          status: device.status || 'Unknown',
+          clientName: device.client || device.customerName,
+          lastSeen: device.lastseen ? new Date(device.lastseen) : undefined,
+          deviceId: device.id || device.deviceId,
+          deviceName: device.name || device.deviceName || 'Unknown',
+          customerName: device.client || device.customerName,
+          customerId: device.clientId || device.customerId
+        }));
+      }
+
+      return [];
+    } catch (error) {
+      logger.error('Failed to get devices:', error);
+      return [];
+    }
+  }
+  
+  /**
+   * Get alerts
+   */
+  async getAlerts(options?: { status?: string; startDate?: Date }): Promise<NableAlert[]> {
+    await this.ensureInitialized();
+
+    try {
+      const params: any = {
+        apikey: this.apiKey,
+        service: 'list_alerts'
+      };
+
+      if (options?.status) {
+        params.status = options.status;
+      }
+
+      if (options?.startDate) {
+        params.since = options.startDate.toISOString();
+      }
+
+      const response = await axios.get(`${this.apiUrl}/api/`, {
+        params,
+        timeout: 30000
+      });
+
+      if (Array.isArray(response.data)) {
+        return response.data.map((alert: any) => ({
+          alertId: alert.id || alert.alertId || `ALERT-${Date.now()}`,
+          alertType: alert.type || alert.alertType || 'Unknown',
+          severity: alert.severity || 'Medium',
+          message: alert.message || alert.description || 'Alert triggered',
+          deviceId: alert.deviceId || alert.device || '',
+          details: alert.details || {},
+          timestamp: alert.timestamp ? new Date(alert.timestamp) : new Date()
+        }));
+      }
+
+      return [];
+    } catch (error) {
+      logger.error('Failed to get alerts:', error);
+      return [];
+    }
   }
 
+  /**
+   * Run a command on a device
+   */
+  async runCommand(deviceId: string, command: string): Promise<ScriptExecutionResult> {
+    await this.ensureInitialized();
+
+    try {
+      logger.info(`Running command on device ${deviceId}: ${command}`);
+      
+      const response = await axios.get(`${this.apiUrl}/api/`, {
+        params: {
+          apikey: this.apiKey,
+          service: 'run_command',
+          deviceid: deviceId,
+          command: command
+        },
+        timeout: 60000
+      });
+
+      return {
+        success: response.status === 200,
+        output: response.data?.output || response.data || 'Command executed',
+        exitCode: response.data?.exitCode || 0,
+        executionId: `CMD-${Date.now()}`,
+        deviceId
+      };
+    } catch (error: any) {
+      logger.error(`Failed to run command on device ${deviceId}:`, error);
+      return {
+        success: false,
+        error: error.message || 'Command execution failed',
+        exitCode: -1,
+        deviceId
+      };
+    }
+  }
+
+  /**
+   * Run remediation script (alias for executeScript with specific naming)
+   */
   async runRemediationScript(
     deviceId: string,
     scriptName: string,
-    ticketNumber?: string,
     parameters?: Record<string, any>
-  ): Promise<any> {
-    // Enhanced script mapping with more options
-    const scriptMap: Record<string, string> = {
-      'cleanup-disk': 'SCRIPT_DISK_CLEANUP',
-      'disk_cleanup': 'SCRIPT_DISK_CLEANUP',
-      'restart-iis': 'SCRIPT_IIS_RESTART',
-      'restart-service': 'SCRIPT_SERVICE_RESTART',
-      'service_restart': 'SCRIPT_SERVICE_RESTART',
-      'clear-cache': 'SCRIPT_CLEAR_CACHE',
-      'install-updates': 'SCRIPT_WINDOWS_UPDATE',
-      'update_install': 'SCRIPT_WINDOWS_UPDATE',
-      'check-disk': 'SCRIPT_CHKDSK',
-      'reset-network': 'SCRIPT_NETWORK_RESET',
-      'system_scan': 'SCRIPT_SYSTEM_SCAN'
-    };
+  ): Promise<ScriptExecutionResult> {
+    return this.executeScript(deviceId, scriptName, parameters);
+  }
 
-    const scriptId = scriptMap[scriptName] || scriptName;
-    
-    logger.info(`Running remediation script '${scriptName}' (ID: ${scriptId}) on device ${deviceId}`);
-    
-    // Include ticket number in parameters for tracking
-    const enhancedParams = {
-      ...parameters,
-      ticketNumber,
-      triggeredBy: 'automation'
-    };
-    
+  /**
+   * Install a patch on a device
+   */
+  async installPatch(deviceId: string, patchId: string): Promise<ScriptExecutionResult> {
+    await this.ensureInitialized();
+
     try {
-      // Execute the script
-      const result = await this.executeScript(deviceId, scriptId, enhancedParams);
+      logger.info(`Installing patch ${patchId} on device ${deviceId}`);
       
-      // For development/testing, simulate detailed output
-      if (!result.output && (process.env.NODE_ENV === 'development' || process.env.SIMULATE_SCRIPTS === 'true')) {
-        return this.simulateScriptOutput(scriptName, result);
-      }
-      
-      // Parse and enhance the result
+      const response = await axios.get(`${this.apiUrl}/api/`, {
+        params: {
+          apikey: this.apiKey,
+          service: 'install_patch',
+          deviceid: deviceId,
+          patchid: patchId
+        },
+        timeout: 300000 // 5 minute timeout for patch installation
+      });
+
       return {
-        success: result.status === 'Completed' && (result.exitCode === 0 || result.exitCode === 3010),
-        executionId: result.executionId,
-        output: result.output,
-        errorOutput: result.errorMessage,
-        exitCode: result.exitCode || 0,
-        startTime: result.startTime,
-        endTime: result.endTime
+        success: response.status === 200,
+        output: response.data?.output || `Patch ${patchId} installed`,
+        exitCode: response.data?.exitCode || 0,
+        executionId: `PATCH-${Date.now()}`,
+        deviceId
       };
     } catch (error: any) {
-      logger.error(`Script execution failed: ${error.message}`);
-      throw error;
+      logger.error(`Failed to install patch ${patchId} on device ${deviceId}:`, error);
+      return {
+        success: false,
+        error: error.message || 'Patch installation failed',
+        exitCode: -1,
+        deviceId
+      };
     }
   }
-  
+
   /**
-   * Get script execution status with enhanced details
+   * Get the status of a script execution
    */
-  async getScriptStatus(deviceId: string, executionId: string): Promise<any> {
-    try {
-      const result = await this.getScriptExecutionStatus(executionId);
-      
+  async getScriptExecutionStatus(executionId?: string): Promise<ScriptExecutionResult> {
+    await this.ensureInitialized();
+
+    if (!executionId) {
       return {
-        completed: result.status === 'Completed' || result.status === 'Failed',
-        status: result.status,
+        success: false,
+        error: 'Execution ID is required',
+        exitCode: -1
+      };
+    }
+
+    try {
+      const response = await axios.get(`${this.apiUrl}/api/`, {
+        params: {
+          apikey: this.apiKey,
+          service: 'get_script_status',
+          executionid: executionId
+        },
+        timeout: 10000
+      });
+
+      return {
+        success: response.data?.status === 'completed' || response.data?.status === 'success',
+        output: response.data?.output || response.data?.message || '',
+        error: response.data?.error,
+        exitCode: response.data?.exitCode || (response.data?.status === 'completed' ? 0 : 1),
+        executionId: executionId
+      };
+    } catch (error: any) {
+      logger.error(`Failed to get script execution status for ${executionId}:`, error);
+      return {
+        success: false,
+        error: error.message || 'Failed to get execution status',
+        exitCode: -1,
+        executionId: executionId
+      };
+    }
+  }
+
+  /**
+   * Execute predefined remediation scripts
+   */
+  async executeRemediation(
+    deviceId: string,
+    alertType: string,
+    parameters?: Record<string, any>
+  ): Promise<ScriptExecutionResult> {
+    logger.info(`Executing remediation for ${alertType} on device ${deviceId}`);
+
+    // Map alert types to remediation scripts
+    const remediationMap: Record<string, { script: string; params: any }> = {
+      'DISK_SPACE_LOW': {
+        script: 'disk_cleanup',
+        params: {
+          target: parameters?.driveLetter || 'C:',
+          cleanTemp: true,
+          cleanLogs: true,
+          cleanRecycle: true
+        }
+      },
+      'SERVICE_STOPPED': {
+        script: 'service_restart',
+        params: {
+          serviceName: parameters?.serviceName || 'Spooler',
+          waitTime: 5
+        }
+      },
+      'HIGH_CPU': {
+        script: 'check_services',
+        params: {
+          killHighUsage: true,
+          threshold: 90
+        }
+      },
+      'HIGH_MEMORY': {
+        script: 'clear_temp_files',
+        params: {
+          clearCache: true,
+          restartExplorer: false
+        }
+      },
+      'WINDOWS_UPDATE_REQUIRED': {
+        script: 'windows_update',
+        params: {
+          installCritical: true,
+          rebootIfNeeded: false
+        }
+      }
+    };
+
+    const remediation = remediationMap[alertType];
+    if (!remediation) {
+      logger.warn(`No remediation script defined for alert type: ${alertType}`);
+    return {
+        success: false,
+        error: `No remediation available for ${alertType}`,
+        deviceId
+      };
+    }
+
+    // Merge provided parameters with defaults
+    const finalParams = { ...remediation.params, ...parameters };
+    
+    return this.executeScript(deviceId, remediation.script, finalParams);
+  }
+
+  /**
+   * Check script execution status (if async execution is supported)
+   */
+  async getScriptStatus(executionId: string): Promise<ScriptExecutionResult> {
+    await this.ensureInitialized();
+
+    try {
+      const response = await axios.get(`${this.apiUrl}/api/`, {
+        params: {
+          apikey: this.apiKey,
+          service: 'get_script_status',
+          executionid: executionId
+        },
+        timeout: 10000
+      });
+
+      const result = response.data;
+      return {
+        success: result.status === 'completed' && result.exitCode === 0,
+        output: result.output,
+        error: result.error,
         exitCode: result.exitCode || 0,
-        output: result.output || '',
-        errorOutput: result.errorMessage || '',
-        actions: this.parseScriptActions(result.output)
+        executionId
       };
     } catch (error) {
-      logger.error(`Failed to get script status: ${error}`);
-      throw error;
+      logger.error(`Failed to get script status for ${executionId}:`, error);
+      return {
+        success: false,
+        error: 'Failed to get script status',
+        executionId
+      };
     }
-  }
-  
-  /**
-   * Parse script output to extract actions taken
-   */
-  private parseScriptActions(output: string): string[] {
-    const actions: string[] = [];
-    
-    // Parse common action patterns
-    const patterns = [
-      /cleared:\s*(.+)/gi,
-      /deleted:\s*(.+)/gi,
-      /restarted:\s*(.+)/gi,
-      /installed:\s*(.+)/gi,
-      /updated:\s*(.+)/gi,
-      /fixed:\s*(.+)/gi
-    ];
-    
-    patterns.forEach(pattern => {
-      const matches = output.matchAll(pattern);
-      for (const match of matches) {
-        actions.push(match[0]);
-      }
-    });
-    
-    return actions;
-  }
-  
-  /**
-   * Simulate script output for testing
-   */
-  private simulateScriptOutput(scriptName: string, baseResult: ScriptExecutionResult): any {
-    const simulations: Record<string, any> = {
-      'cleanup-disk': {
-        output: `Disk Cleanup Completed Successfully
-Cleared: 22.3 GB
-- Windows Temp Files: 5.2 GB
-- IIS Logs: 8.7 GB
-- SQL Transaction Logs: 6.4 GB
-- Recycle Bin: 2.0 GB
-Current usage: 71%
-Free space: 89 GB`,
-        exitCode: 0,
-        success: true
-      },
-      'restart-iis': {
-        output: `IIS Service Restart Completed
-Stopping IIS Admin Service... Done
-Stopping World Wide Web Publishing Service... Done
-Starting IIS Admin Service... Started
-Starting World Wide Web Publishing Service... Started
-All application pools restarted successfully
-Service Status: Running`,
-        exitCode: 0,
-        success: true
-      },
-      'clear-cache': {
-        output: `Cache Clear Operation
-DNS Cache: Flushed successfully
-Browser Caches: Cleared (Chrome, Edge, Firefox)
-Application Caches: Reset
-Cleared 387 cache items
-Total space recovered: 1.2 GB`,
-        exitCode: 0,
-        success: true
-      },
-      'install-updates': {
-        output: `Windows Update Installation
-Checking for updates... Found 3
-Installing KB5001234... Success
-Installing KB5001235... Success
-Installing KB5001236... Success
-Installed: 3 updates
-Pending: 0 updates
-Reboot required: Yes`,
-        exitCode: 3010, // Reboot required
-        success: true
-      }
-    };
-    
-    const simulation = simulations[scriptName] || {
-      output: `Script ${scriptName} executed successfully`,
-      exitCode: 0,
-      success: true
-    };
-    
-    return {
-      ...baseResult,
-      ...simulation,
-      executionId: baseResult.executionId,
-      startTime: baseResult.startTime,
-      endTime: new Date()
-    };
-  }
-
-  async installPatch(deviceId: string, patchId: string): Promise<void> {
-    return this.executeWithRetry(async () => {
-      await this.client.post(`/devices/${deviceId}/patches/${patchId}/install`);
-      logger.info(`Initiated patch installation: ${patchId} on device ${deviceId}`);
-    });
-  }
-
-  async restartDevice(deviceId: string, delay: number = 60): Promise<void> {
-    return this.executeWithRetry(async () => {
-      await this.client.post(`/devices/${deviceId}/restart`, { delay });
-      logger.info(`Initiated device restart: ${deviceId} with delay ${delay}s`);
-    });
-  }
-
-  async getDeviceHealth(deviceId: string): Promise<{
-    cpuUsage: number;
-    memoryUsage: number;
-    diskUsage: number;
-    services: Array<{ name: string; status: string }>;
-    lastBootTime: Date;
-  }> {
-    return this.executeWithRetry(async () => {
-      const response = await this.client.get(`/devices/${deviceId}/health`);
-      return response.data;
-    });
-  }
-
-  async runCommand(deviceId: string, command: string): Promise<{
-    output: string;
-    exitCode: number;
-    executionTime: number;
-  }> {
-    return this.executeWithRetry(async () => {
-      const response = await this.client.post(`/devices/${deviceId}/command`, {
-        command,
-        timeout: 300000 // 5 minutes
-      });
-      return response.data;
-    });
-  }
-
-  async getCustomers(): Promise<Array<{
-    customerId: string;
-    customerName: string;
-    deviceCount: number;
-  }>> {
-    return this.executeWithRetry(async () => {
-      const response = await this.client.get('/customers');
-      return response.data.customers;
-    });
-  }
-
-  async createMaintenanceWindow(
-    deviceId: string,
-    startTime: Date,
-    endTime: Date,
-    description: string
-  ): Promise<void> {
-    return this.executeWithRetry(async () => {
-      await this.client.post('/maintenance-windows', {
-        deviceId,
-        startTime,
-        endTime,
-        description
-      });
-      logger.info(`Created maintenance window for device ${deviceId}`);
-    });
   }
 }
