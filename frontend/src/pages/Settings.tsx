@@ -198,18 +198,23 @@ export const Settings: React.FC = () => {
           companyId: settings?.api.connectwiseCompanyId,
           publicKey: settings?.api.connectwisePublicKey,
           privateKey: settings?.api.connectwisePrivateKey,
-          isActive: (settings as any)?._connectwise?.isActive || false
+          clientId: settings?.api.connectwiseClientId,
+          isActive: true
         },
         nable: {
           apiUrl: settings?.api.nableUrl,
           apiKey: settings?.api.nableAccessKey,
-          isActive: (settings as any)?._nable?.isActive || false
+          isActive: true
         },
         general: settings?.general,
         notifications: settings?.notifications
       };
       
       await axios.put(`${getApiUrl()}/api/settings`, dataToSend);
+      
+      // Trigger backend services to reload credentials
+      await axios.post(`${getApiUrl()}/api/settings/reload-credentials`);
+      
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 3000);
     } catch (error) {

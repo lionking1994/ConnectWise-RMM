@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { useAuth } from './AuthContext';
+import { getApiUrl } from '../config/api';
 
 const SocketContext = createContext<Socket | null>(null);
 
@@ -14,7 +15,7 @@ export const SocketProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   useEffect(() => {
     if (token) {
-      const newSocket = io(process.env.REACT_APP_API_URL || 'http://localhost:3001', {
+      const newSocket = io(getApiUrl(), {
         auth: { token },
         transports: ['websocket', 'polling'],
       });

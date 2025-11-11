@@ -59,6 +59,7 @@ import {
 } from '@mui/icons-material';
 import { useSnackbar } from 'notistack';
 import axios from 'axios';
+import { getApiUrl } from '../config/api';
 import CodeEditor from '@uiw/react-textarea-code-editor';
 
 interface Script {
@@ -172,9 +173,8 @@ export const ScriptManager: React.FC = () => {
       if (!showInactive) params.append('isActive', 'true');
 
       const token = localStorage.getItem('token');
-      const response = await axios.get(`/api/scripts?${params}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        baseURL: window.location.origin.replace(':3000', ':3001')
+      const response = await axios.get(`${getApiUrl()}/api/scripts?${params}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       
       // Ensure response.data is an array
@@ -232,9 +232,8 @@ export const ScriptManager: React.FC = () => {
   const fetchTemplates = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.get('/api/scripts/templates', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        baseURL: window.location.origin.replace(':3000', ':3001')
+      const response = await axios.get(`${getApiUrl()}/api/scripts/templates`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       
       // Ensure response.data is an array
@@ -271,9 +270,8 @@ export const ScriptManager: React.FC = () => {
   const fetchExecutionHistory = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await axios.get('/api/scripts/executions/history', {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        baseURL: window.location.origin.replace(':3000', ':3001')
+      const response = await axios.get(`${getApiUrl()}/api/scripts/executions/history`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {}
       });
       
       // Ensure response.data is an array
@@ -319,11 +317,14 @@ export const ScriptManager: React.FC = () => {
 
   const handleSaveScript = async () => {
     try {
+      const token = localStorage.getItem('token');
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      
       if (editMode && selectedScript) {
-        await axios.put(`/api/scripts/${selectedScript.id}`, formData);
+        await axios.put(`${getApiUrl()}/api/scripts/${selectedScript.id}`, formData, { headers });
         enqueueSnackbar('Script updated successfully', { variant: 'success' });
       } else {
-        await axios.post('/api/scripts', formData);
+        await axios.post(`${getApiUrl()}/api/scripts`, formData, { headers });
         enqueueSnackbar('Script created successfully', { variant: 'success' });
       }
       setDialogOpen(false);
@@ -336,7 +337,9 @@ export const ScriptManager: React.FC = () => {
   const handleDeleteScript = async (id: number) => {
     if (window.confirm('Are you sure you want to delete this script?')) {
       try {
-        await axios.delete(`/api/scripts/${id}`);
+        const token = localStorage.getItem('token');
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
+        await axios.delete(`${getApiUrl()}/api/scripts/${id}`, { headers });
         enqueueSnackbar('Script deleted successfully', { variant: 'success' });
         fetchScripts();
       } catch (error) {
@@ -349,7 +352,9 @@ export const ScriptManager: React.FC = () => {
     const name = prompt('Enter name for cloned script:', `${script.name} (Copy)`);
     if (name) {
       try {
-        await axios.post(`/api/scripts/${script.id}/clone`, { name });
+        const token = localStorage.getItem('token');
+        const headers = token ? { Authorization: `Bearer ${token}` } : {};
+        await axios.post(`${getApiUrl()}/api/scripts/${script.id}/clone`, { name }, { headers });
         enqueueSnackbar('Script cloned successfully', { variant: 'success' });
         fetchScripts();
       } catch (error) {
@@ -365,11 +370,13 @@ export const ScriptManager: React.FC = () => {
     }
 
     try {
-      const response = await axios.post(`/api/scripts/${selectedScript.id}/execute`, {
+      const token = localStorage.getItem('token');
+      const headers = token ? { Authorization: `Bearer ${token}` } : {};
+      const response = await axios.post(`${getApiUrl()}/api/scripts/${selectedScript.id}/execute`, {
         deviceId: targetDeviceId,
         parameters: executionParams,
         ticketId: targetTicketId || undefined,
-      });
+      }, { headers });
 
       if (response.data.status === 'success') {
         enqueueSnackbar('Script executed successfully', { variant: 'success' });

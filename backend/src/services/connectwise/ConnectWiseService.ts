@@ -95,12 +95,18 @@ export class ConnectWiseService {
   }
 
   private async ensureInitialized(): Promise<void> {
+    // Always try to reload credentials to ensure we have the latest
+    await this.setupClient();
     if (!this.initialized || !this.client) {
-      await this.setupClient();
-      if (!this.client) {
-        throw new Error('ConnectWise client not configured. Please check credentials.');
-      }
+      throw new Error('ConnectWise client not configured. Please check credentials.');
     }
+  }
+
+  public async reloadCredentials(): Promise<void> {
+    logger.info('Reloading ConnectWise credentials...');
+    this.initialized = false;
+    this.client = null;
+    await this.setupClient();
   }
 
   public static getInstance(): ConnectWiseService {

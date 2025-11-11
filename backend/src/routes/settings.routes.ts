@@ -288,6 +288,34 @@ settingsRouter.post('/test-connection/connectwise', async (req, res, next) => {
 });
 
 // Test N-able connection
+// Reload credentials in services
+settingsRouter.post('/reload-credentials', async (req, res, next) => {
+  try {
+    const { ConnectWiseService } = await import('../services/connectwise/ConnectWiseService');
+    const { NableService } = await import('../services/nable/NableService');
+    
+    const cwService = ConnectWiseService.getInstance();
+    const nableService = NableService.getInstance();
+    
+    await cwService.reloadCredentials();
+    await nableService.reloadCredentials();
+    
+    logger.info('Reloaded credentials in all services');
+    
+    res.json({
+      success: true,
+      message: 'Credentials reloaded successfully'
+    });
+  } catch (error: any) {
+    logger.error('Error reloading credentials:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reload credentials',
+      error: error.message
+    });
+  }
+});
+
 settingsRouter.post('/test-connection/nable', async (req, res, next) => {
   try {
     const { accessKey, url } = req.body;

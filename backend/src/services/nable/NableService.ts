@@ -63,12 +63,17 @@ export class NableService {
   }
 
   private async ensureInitialized(): Promise<void> {
-    if (!this.initialized) {
-      await this.initialize();
-      if (!this.initialized) {
-        throw new Error('N-able service not configured. Please check credentials.');
-      }
+    // Always try to reload credentials to ensure we have the latest
+    await this.initialize();
+    if (!this.initialized || !this.apiKey || !this.apiUrl) {
+      throw new Error('N-able service not configured. Please check credentials.');
     }
+  }
+
+  public async reloadCredentials(): Promise<void> {
+    logger.info('Reloading N-able credentials...');
+    this.initialized = false;
+    await this.initialize();
   }
 
   public static getInstance(): NableService {
@@ -363,7 +368,7 @@ export class NableService {
       };
     }
   }
-
+  
   /**
    * Get the status of a script execution
    */
@@ -387,7 +392,7 @@ export class NableService {
         },
         timeout: 10000
       });
-
+      
       return {
         success: response.data?.status === 'completed' || response.data?.status === 'success',
         output: response.data?.output || response.data?.message || '',
@@ -405,7 +410,7 @@ export class NableService {
       };
     }
   }
-
+  
   /**
    * Execute predefined remediation scripts
    */
