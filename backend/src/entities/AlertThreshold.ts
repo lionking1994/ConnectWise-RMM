@@ -1,3 +1,10 @@
+export enum EscalationLevel {
+  L1 = 'L1',
+  L2 = 'L2',
+  L3 = 'L3',
+  MANAGER = 'MANAGER'
+}
+
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
 import { EscalationChain } from './EscalationChain';
 
@@ -187,4 +194,19 @@ export class AlertThreshold {
 
   @Column({ nullable: true })
   updatedBy: string;
+
+  @Column('simple-array', { nullable: true })
+  notificationRecipients: string[];
+
+  @Column({ default: false })
+  autoEscalate: boolean;
+
+  @Column({ default: 5 })
+  escalationDelay: number;
+
+  @Column({ default: 3 })
+  escalationThreshold: number;
+
+  @Column({ default: false })
+  createTicket: boolean;
 }

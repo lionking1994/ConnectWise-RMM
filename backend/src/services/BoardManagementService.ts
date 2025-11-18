@@ -54,7 +54,7 @@ export class BoardManagementService {
   // Fetch available boards from ConnectWise
   async fetchAvailableBoards(): Promise<ConnectWiseBoard[]> {
     try {
-      const boards = await this.connectWiseService.getServiceBoards();
+      const boards = await this.connectWiseService.getBoards();
       return boards.filter(board => !board.inactiveFlag);
     } catch (error) {
       logger.error('Error fetching ConnectWise boards:', error);
@@ -118,12 +118,12 @@ export class BoardManagementService {
       logger.info(`Board ${boardName} configured successfully`);
       
       // Send notification
-      await this.notificationService.sendNotification({
-        type: 'board_configured',
-        priority: 'low',
-        title: 'New Board Configured',
+      await this.notificationService.send({
+        channels: ['email'],
+        subject: 'New Board Configured',
         message: `Board "${boardName}" has been added to monitoring`,
-        data: { boardId, boardName, isPrimary },
+        priority: 'low',
+        metadata: { boardId, boardName, isPrimary },
       });
 
       return saved;
@@ -247,7 +247,10 @@ export class BoardManagementService {
 
     try {
       // Fetch tickets from ConnectWise
-      const tickets = await this.connectWiseService.getTicketsByBoard(boardId, boardConfig.filters);
+      const tickets = await this.connectWiseService.getTickets({ 
+        conditions: `board/id=${boardId}`,
+        ...boardConfig.filters 
+      });
       
       for (const cwTicket of tickets) {
         try {
@@ -259,19 +262,20 @@ export class BoardManagementService {
           if (!localTicket) {
             // Create new ticket
             localTicket = this.ticketRepository.create({
+              id: undefined as any,
               externalId: String(cwTicket.id),
               ticketNumber: cwTicket.id.toString(),
               title: cwTicket.summary,
-              description: cwTicket.initialDescription || '',
-              status: this.mapConnectWiseStatus(cwTicket.status?.name),
-              priority: cwTicket.priority?.name || 'Medium',
-              source: 'connectwise',
+              description: (cwTicket as any).initialDescription || cwTicket.summary || '',
+              status: this.mapConnectWiseStatus(cwTicket.status?.name) as any,
+              priority: (cwTicket.priority?.name || 'Medium') as any,
+              source: 'connectwise' as any,
               boardId,
               boardName: boardConfig.boardName,
               clientName: cwTicket.company?.name || 'Unknown',
-              deviceId: cwTicket.deviceId,
-              deviceName: cwTicket.deviceName,
-              assignedTo: cwTicket.owner?.identifier,
+              deviceId: (cwTicket as any).deviceId,
+              deviceName: (cwTicket as any).deviceName,
+              assignedTo: (cwTicket.owner as any)?.identifier || cwTicket.owner?.name,
               metadata: {
                 connectwiseData: cwTicket,
                 boardSettings: boardConfig.settings,
@@ -296,14 +300,17 @@ export class BoardManagementService {
             const priorityChanged = localTicket.priority !== cwTicket.priority?.name;
 
             localTicket.title = cwTicket.summary;
-            localTicket.description = cwTicket.initialDescription || localTicket.description;
-            localTicket.status = this.mapConnectWiseStatus(cwTicket.status?.name);
-            localTicket.priority = cwTicket.priority?.name || localTicket.priority;
-            localTicket.assignedTo = cwTicket.owner?.identifier;
+            localTicket.description = (cwTicket as any).initialDescription || localTicket.description;
+            localTicket.status = this.mapConnectWiseStatus(cwTicket.status?.name) as any;
+            localTicket.priority = (cwTicket.priority?.name || localTicket.priority) as any;
+            localTicket.assignedTo = (cwTicket.owner as any)?.identifier || cwTicket.owner?.name;
             localTicket.metadata = {
               ...localTicket.metadata,
               connectwiseData: cwTicket,
-              lastSyncedAt: new Date(),
+              customFields: {
+                ...localTicket.metadata?.customFields,
+                lastSyncedAt: new Date(),
+              }
             };
 
             await this.ticketRepository.save(localTicket);
@@ -443,11 +450,12 @@ export class BoardManagementService {
       const fieldMapping = this.fieldMappingRepository.create({
         boardConfig,
         ...mapping,
+        dataType: mapping.dataType as any,
         syncEnabled: true,
-      });
+      } as any);
 
       const saved = await this.fieldMappingRepository.save(fieldMapping);
-      savedMappings.push(saved);
+      savedMappings.push(saved as BoardFieldMapping);
     }
 
     logger.info(`Configured ${savedMappings.length} field mappings for board ${boardConfig.boardName}`);
@@ -547,7 +555,7 @@ export class BoardManagementService {
         const { EscalationService } = await import('./EscalationService');
         const escalationService = new EscalationService();
         await escalationService.escalateTicket({
-          ticketId: ticket.id,
+          ticketId: parseInt(ticket.id),
           triggerReason: 'Board automation rule',
           severity: ticket.priority,
         });
@@ -567,7 +575,7 @@ export class BoardManagementService {
           parameters.scriptId,
           ticket.deviceId || '',
           parameters.scriptParameters || {},
-          ticket.id
+          parseInt(ticket.id)
         );
         break;
 
@@ -643,13 +651,13 @@ export class BoardManagementService {
 
   // Send notifications
   private async sendNewTicketNotification(ticket: Ticket, boardConfig: BoardConfiguration): Promise<void> {
-    await this.notificationService.sendNotification({
-      type: 'new_ticket',
-      priority: ticket.priority === 'critical' ? 'high' : 'medium',
-      title: `New Ticket on ${boardConfig.boardName}`,
+    await this.notificationService.send({
+      channels: ['email'],
+      subject: `New Ticket on ${boardConfig.boardName}`,
       message: `Ticket #${ticket.ticketNumber}: ${ticket.title}`,
-      data: {
-        ticketId: ticket.id,
+      priority: ticket.priority === 'critical' ? 'high' : 'medium',
+      metadata: {
+        ticketId: parseInt(ticket.id),
         boardId: boardConfig.boardId,
         boardName: boardConfig.boardName,
         priority: ticket.priority,
@@ -658,13 +666,13 @@ export class BoardManagementService {
   }
 
   private async sendStatusChangeNotification(ticket: Ticket, boardConfig: BoardConfiguration): Promise<void> {
-    await this.notificationService.sendNotification({
-      type: 'status_change',
-      priority: 'low',
-      title: `Ticket Status Changed`,
+    await this.notificationService.send({
+      channels: ['email'],
+      subject: `Ticket Status Changed`,
       message: `Ticket #${ticket.ticketNumber} status changed to ${ticket.status}`,
-      data: {
-        ticketId: ticket.id,
+      priority: 'low',
+      metadata: {
+        ticketId: parseInt(ticket.id),
         boardName: boardConfig.boardName,
         newStatus: ticket.status,
       },
@@ -672,13 +680,13 @@ export class BoardManagementService {
   }
 
   private async sendPriorityChangeNotification(ticket: Ticket, boardConfig: BoardConfiguration): Promise<void> {
-    await this.notificationService.sendNotification({
-      type: 'priority_change',
-      priority: ticket.priority === 'critical' ? 'high' : 'medium',
-      title: `Ticket Priority Changed`,
+    await this.notificationService.send({
+      channels: ['email'],
+      subject: `Ticket Priority Changed`,
       message: `Ticket #${ticket.ticketNumber} priority changed to ${ticket.priority}`,
-      data: {
-        ticketId: ticket.id,
+      priority: ticket.priority === 'critical' ? 'high' : 'medium',
+      metadata: {
+        ticketId: parseInt(ticket.id),
         boardName: boardConfig.boardName,
         newPriority: ticket.priority,
       },

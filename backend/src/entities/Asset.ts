@@ -99,6 +99,27 @@ export class Asset {
   @Column({ nullable: true })
   nableDeviceId?: string;
 
+  @Column('jsonb', { nullable: true })
+  monitoring: any;
+
+  @Column('jsonb', { nullable: true })
+  compliance: any;
+
+  @Column('jsonb', { nullable: true })
+  financial: any;
+
+  @Column({ nullable: true })
+  clientName: string;
+
+  @Column({ nullable: true })
+  assetTag: string;
+
+  @Column({ type: 'decimal', nullable: true })
+  purchasePrice: number;
+
+  @Column({ nullable: true })
+  maintenanceExpiration: Date;
+
   @CreateDateColumn()
   createdAt: Date;
 

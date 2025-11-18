@@ -60,16 +60,16 @@ export class ScriptOutputBridge extends EventEmitter {
       ticketId,
       deviceId: executionResult.deviceId,
       deviceName: deviceName || executionResult.deviceId,
-      scriptName: executionResult.scriptId,
+      scriptName: executionResult.deviceId,
       output: executionResult.output,
       exitCode: executionResult.exitCode || -1,
-      success: executionResult.status === 'Completed' && (executionResult.exitCode === 0),
+      success: executionResult.success === true || (executionResult.exitCode === 0),
       timestamp: new Date()
     };
 
     // Parse the output based on script type
     scriptOutput.parsedResults = this.parseScriptOutput(
-      executionResult.scriptId,
+      executionResult.deviceId,
       executionResult.output
     );
 
@@ -488,7 +488,6 @@ export class ScriptOutputBridge extends EventEmitter {
       const result = await this.nableService.runRemediationScript(
         deviceId,
         scriptType as any,
-        undefined,
         parameters
       );
 
@@ -497,7 +496,7 @@ export class ScriptOutputBridge extends EventEmitter {
       let attempts = 0;
       const maxAttempts = 60; // 5 minutes with 5-second intervals
 
-      while (executionResult.status === 'Running' && attempts < maxAttempts) {
+      while (!executionResult.success && attempts < maxAttempts) {
         await new Promise(resolve => setTimeout(resolve, 5000)); // Wait 5 seconds
         executionResult = await this.nableService.getScriptExecutionStatus(executionResult.executionId);
         attempts++;

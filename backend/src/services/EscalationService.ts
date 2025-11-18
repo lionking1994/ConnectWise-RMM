@@ -342,12 +342,12 @@ export class EscalationService {
   private async findSpecificUser(userId?: number): Promise<User | null> {
     if (!userId) return null;
     
-    const user = await this.userRepository.findOne({ where: { id: userId } });
+    const user = await this.userRepository.findOne({ where: { id: String(userId) } });
     if (!user || !user.isActive) return null;
 
     // Check if user is available
     const profile = await this.profileRepository.findOne({
-      where: { user: { id: userId } },
+      where: { user: { id: String(userId) } },
       relations: ['user'],
     });
 
@@ -441,11 +441,11 @@ export class EscalationService {
     let minTickets = Infinity;
 
     for (const userId of rules.userPool) {
-      const user = await this.userRepository.findOne({ where: { id: userId } });
+      const user = await this.userRepository.findOne({ where: { id: String(userId) } });
       if (!user || !user.isActive) continue;
 
       const profile = await this.profileRepository.findOne({
-        where: { user: { id: userId } },
+        where: { user: { id: String(userId) } },
       });
 
       if (profile && profile.availability?.status !== 'offline') {
@@ -557,14 +557,14 @@ export class EscalationService {
   private async assignTicket(ticketId: number, userId: number): Promise<void> {
     try {
       // Update ticket in ConnectWise
-      await this.connectWiseService.updateTicket(ticketId, {
+      await this.connectWiseService.updateTicket(String(ticketId), {
         assignedToId: userId,
         note: `Ticket escalated and reassigned via automation`,
       });
 
       // Update local ticket record if exists
       const ticketRepo = AppDataSource.getRepository(Ticket);
-      const ticket = await ticketRepo.findOne({ where: { id: ticketId } });
+      const ticket = await ticketRepo.findOne({ where: { id: String(ticketId) } });
       if (ticket) {
         ticket.assignedToId = userId;
         await ticketRepo.save(ticket);
@@ -600,7 +600,7 @@ export class EscalationService {
       for (const channel of level.notificationChannels) {
         switch (channel) {
           case 'teams':
-            await this.teamsService.sendEscalationNotification({
+            await this.teamsService.sendMessage({
               title: `Ticket Escalation: #${context.ticketId}`,
               message: chain.notificationTemplates?.escalation?.body || 
                       `Ticket has been escalated to ${assignee.email}. Reason: ${context.triggerReason}`,
@@ -652,7 +652,7 @@ export class EscalationService {
   private async updateTechnicianWorkload(userId: number, change: number): Promise<void> {
     try {
       const profile = await this.profileRepository.findOne({
-        where: { user: { id: userId } },
+        where: { user: { id: String(userId) } },
       });
 
       if (profile) {
@@ -746,12 +746,12 @@ export class EscalationService {
     updates: Partial<TechnicianProfile>
   ): Promise<TechnicianProfile> {
     let profile = await this.profileRepository.findOne({
-      where: { user: { id: userId } },
+      where: { user: { id: String(userId) } },
       relations: ['user'],
     });
 
     if (!profile) {
-      const user = await this.userRepository.findOne({ where: { id: userId } });
+      const user = await this.userRepository.findOne({ where: { id: String(userId) } });
       if (!user) {
         throw new Error('User not found');
       }

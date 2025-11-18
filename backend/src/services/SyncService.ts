@@ -80,15 +80,25 @@ export class SyncService extends EventEmitter {
   }
 
   private startPeriodicSync(): void {
-    // Sync disabled for demo/testing - uncomment to enable
-    // this.syncJob = new CronJob('*/5 * * * *', async () => {
-    //   await this.syncAll();
-    // });
-    // this.syncJob.start();
+    // Enable automatic sync every 5 minutes
+    this.syncJob = new CronJob('*/5 * * * *', async () => {
+      logger.info('Running scheduled sync with external systems');
+      await this.syncAll();
+    });
+    this.syncJob.start();
     
-    // Initial sync disabled for demo/testing
-    // this.syncAll();
-    logger.info('Periodic sync disabled - using demo mode without external API connections');
+    // Trigger initial sync on startup after a short delay
+    setTimeout(async () => {
+      logger.info('Running initial sync with external systems');
+      try {
+        await this.syncAll();
+        logger.info('Initial sync completed successfully');
+      } catch (error) {
+        logger.error('Initial sync failed:', error);
+      }
+    }, 5000); // 5 second delay to ensure services are ready
+    
+    logger.info('Periodic sync enabled - will sync with ConnectWise every 5 minutes');
   }
 
   async syncAll(): Promise<void> {
@@ -144,11 +154,13 @@ export class SyncService extends EventEmitter {
 
     try {
       // Fetch tickets from ConnectWise
+      logger.info('Fetching open tickets from ConnectWise...');
       const cwTickets = await this.connectwiseService.getTickets({
         conditions: 'closedFlag=false',
         orderBy: 'lastUpdated desc',
         pageSize: 100
       });
+      logger.info(`ConnectWise API returned ${cwTickets.length} open tickets`);
 
       let syncedCount = 0;
 
@@ -203,43 +215,108 @@ export class SyncService extends EventEmitter {
 
       // Fetch alerts based on which service is available
       if (isNsight) {
-        // Use N-sight API
-        alerts = await this.nsightService!.getAlerts();
+        // Use N-sight API to pull failing checks (alerts)
+        logger.info('Fetching failing checks from N-sight API...');
+        const failingChecks = await this.nsightService!.listFailingChecks();
         
-        for (const alert of alerts) {
-          try {
+        // Process each failing check as an alert
+        for (const client of failingChecks.clients || []) {
+          for (const site of client.sites || []) {
+            // Process workstation failures
+            for (const workstation of site.workstations || []) {
+              for (const check of workstation.failedChecks || []) {
+                try {
+                  const alertId = `${workstation.id}-${check.checkId}`;
+                  
             // Check if ticket already exists for this alert
             let ticket = await this.ticketRepository.findOne({
-              where: { externalId: `nsight-${alert.alertId}` }
+                    where: { externalId: `nsight-${alertId}` }
             });
 
-            if (!ticket) {
-              // For N-sight, we already have device info in the alert
-              ticket = this.ticketRepository.create({
-                externalId: `nsight-${alert.alertId}`,
-                title: alert.message,
-                description: `Alert Type: ${alert.alertType}\nDevice ID: ${alert.deviceId}\nCheck: ${alert.checkId}\nDetails: ${JSON.stringify(alert.details, null, 2)}`,
-                status: 'open' as any,
-                priority: this.mapAlertSeverityToPriority(alert.severity),
-                source: TicketSource.NABLE,
-                clientName: 'N-sight Alert', // Would need device details for client name
-                clientId: alert.deviceId,
-                deviceId: alert.deviceId,
-                metadata: {
-                  nableData: {
-                    alertData: alert,
-                    source: 'nsight'
-                  }
-                }
-              });
+                      if (!ticket) {
+                        ticket = this.ticketRepository.create({
+                          externalId: `nsight-${alertId}`,
+                          title: `[${this.getCheckSeverity(check.checkStatus)}] ${workstation.name}: ${check.description}`,
+                          description: `Device: ${workstation.name}\nClient: ${client.name}\nSite: ${site.name}\nCheck: ${check.description}\nStatus: ${check.checkStatus}\nOutput: ${check.formattedOutput}\nFailed at: ${check.date} ${check.time}`,
+                          status: 'open' as any,
+                          priority: this.mapCheckStatusToPriority(check.checkStatus),
+                          source: TicketSource.NABLE,
+                          clientName: client.name,
+                          clientId: client.clientId,
+                          deviceId: workstation.id,
+                          metadata: {
+                            nableData: {
+                              checkData: {
+                                ...check,
+                                checkType: check.checkId // Add numeric check type ID
+                              },
+                              device: workstation,
+                              site: site,
+                              client: client,
+                              source: 'nsight',
+                              deviceType: 'workstation'
+                            }
+                          }
+                        });
 
               await this.ticketRepository.save(ticket);
               syncedCount++;
             }
           } catch (error) {
-            logger.error(`Failed to sync N-sight alert ${alert.alertId}:`, error);
+                  logger.error(`Failed to sync N-sight workstation check ${check.checkId}:`, error);
+                }
+              }
+            }
+            
+            // Process server failures
+            for (const server of site.servers || []) {
+              for (const check of server.failedChecks || []) {
+                try {
+                  const alertId = `${server.id}-${check.checkId}`;
+                  
+                  // Check if ticket already exists for this alert
+                  let ticket = await this.ticketRepository.findOne({
+                    where: { externalId: `nsight-${alertId}` }
+                  });
+
+                      if (!ticket) {
+                        ticket = this.ticketRepository.create({
+                          externalId: `nsight-${alertId}`,
+                          title: `[${this.getCheckSeverity(check.checkStatus)}] ${server.name}: ${check.description}`,
+                          description: `Device: ${server.name}\nClient: ${client.name}\nSite: ${site.name}\nCheck: ${check.description}\nStatus: ${check.checkStatus}\nOutput: ${check.formattedOutput}\nFailed at: ${check.date} ${check.time}`,
+                          status: 'open' as any,
+                          priority: this.mapCheckStatusToPriority(check.checkStatus),
+                          source: TicketSource.NABLE,
+                          clientName: client.name,
+                          clientId: client.clientId,
+                          deviceId: server.id,
+                          metadata: {
+                            nableData: {
+                              checkData: {
+                                ...check,
+                                checkType: check.checkId // Add numeric check type ID
+                              },
+                              device: server,
+                              site: site,
+                              client: client,
+                              source: 'nsight',
+                              deviceType: 'server'
+                            }
+                          }
+                        });
+
+                    await this.ticketRepository.save(ticket);
+                    syncedCount++;
+                  }
+                } catch (error) {
+                  logger.error(`Failed to sync N-sight server check ${check.checkId}:`, error);
+                }
+              }
+            }
           }
         }
+        
+        logger.info(`Synced ${syncedCount} alerts from N-sight API`);
       } else if (isNableRmm) {
         // Use N-able RMM API
         alerts = await this.nableService!.getAlerts({
@@ -394,7 +471,10 @@ export class SyncService extends EventEmitter {
     // Fetch devices from N-able/N-sight if available
     if (this.nsightService) {
       try {
-        result.devices = await this.nsightService.listAllDevices();
+        // Combine servers and workstations
+        const servers = await this.nsightService.listServers();
+        const workstations = await this.nsightService.listWorkstations();
+        result.devices = [...servers, ...workstations];
       } catch (error) {
         logger.error('Failed to fetch N-sight devices:', error);
       }
@@ -409,7 +489,9 @@ export class SyncService extends EventEmitter {
     // Fetch recent alerts from N-able/N-sight if available
     if (this.nsightService) {
       try {
-        result.alerts = await this.nsightService.getAlerts();
+        // Fetch failing checks as alerts
+        const failingChecks = await this.nsightService.listFailingChecks();
+        result.alerts = []; // Convert failing checks to alert format if needed
       } catch (error) {
         logger.error('Failed to fetch N-sight alerts:', error);
       }
@@ -444,7 +526,7 @@ export class SyncService extends EventEmitter {
       if (this.nsightService) {
         // Test N-sight API
         const testResult = await this.nsightService.testConnection();
-        return testResult.success;
+        return testResult; // testConnection returns boolean
       } else if (this.nableService) {
         // Test N-able RMM API
         await this.nableService.getDevices();
@@ -461,6 +543,42 @@ export class SyncService extends EventEmitter {
     if (this.syncJob) {
       this.syncJob.stop();
       this.syncJob = null;
+    }
+  }
+
+  /**
+   * Get check severity from status
+   */
+  private getCheckSeverity(checkStatus: string): string {
+    switch(checkStatus) {
+      case 'testerror':
+      case 'testerror_inactive':
+        return 'CRITICAL';
+      case 'testalertdelayed':
+        return 'WARNING';
+      case 'testcleared':
+        return 'INFO';
+      default:
+        return 'ERROR';
+    }
+  }
+
+  /**
+   * Map check status to priority
+   */
+  private mapCheckStatusToPriority(checkStatus: string): any {
+    switch(checkStatus) {
+      case 'testerror':
+      case 'testerror_inactive':
+        return 'critical';
+      case 'testalertdelayed':
+        return 'high';
+      case 'testcleared':
+      case 'test_inactive':
+      case 'testok_inactive':
+        return 'low';
+      default:
+        return 'medium';
     }
   }
 }

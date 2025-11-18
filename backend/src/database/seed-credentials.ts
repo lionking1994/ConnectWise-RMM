@@ -1,5 +1,5 @@
 import { AppDataSource } from './dataSource';
-import { ApiCredential } from '../entities/ApiCredential';
+import { ApiCredential, ApiProvider } from '../entities/ApiCredential';
 import { logger } from '../utils/logger';
 import crypto from 'crypto';
 
@@ -28,7 +28,8 @@ async function seedCredentials() {
     if (existingCreds.length === 0) {
       // ConnectWise credentials
       const cwCreds = credentialRepository.create({
-        service: 'connectwise',
+        id: undefined as any,
+        provider: ApiProvider.CONNECTWISE,
         name: 'ConnectWise Production',
         apiUrl: process.env.CONNECTWISE_API_URL || 'https://api-na.myconnectwise.net',
         credentials: {
@@ -43,7 +44,8 @@ async function seedCredentials() {
       
       // N-able credentials
       const nableCreds = credentialRepository.create({
-        service: 'nable',
+        id: undefined as any,
+        provider: ApiProvider.NABLE,
         name: 'N-able RMM Production',
         apiUrl: process.env.NABLE_API_URL || 'https://api.narmm.com',
         credentials: {
@@ -56,7 +58,8 @@ async function seedCredentials() {
       
       // Teams webhook
       const teamsCreds = credentialRepository.create({
-        service: 'teams',
+        id: undefined as any,
+        provider: ApiProvider.TEAMS,
         name: 'Microsoft Teams Webhook',
         apiUrl: process.env.MS_TEAMS_WEBHOOK_URL || 'https://outlook.office.com/webhook/YOUR_WEBHOOK',
         credentials: {

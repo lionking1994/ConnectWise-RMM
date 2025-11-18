@@ -61,6 +61,8 @@ export class Ticket {
     enum: TicketSource
   })
   source: TicketSource;
+  @Column({ nullable: true })
+  boardId: string;
 
   @Column()
   clientName: string;

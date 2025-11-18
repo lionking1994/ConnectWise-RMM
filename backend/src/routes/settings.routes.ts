@@ -70,7 +70,7 @@ settingsRouter.put('/', async (req, res, next) => {
           provider: ApiProvider.CONNECTWISE,
           name: 'ConnectWise Integration',
           credentials: {
-            apiUrl: connectwise.apiUrl,
+            apiUrl: connectwise.apiUrl || 'https://api-na.myconnectwise.net/v2025_1/apis/3.0',
             apiKey: connectwise.apiKey,
             companyId: connectwise.companyId,
             publicKey: connectwise.publicKey,

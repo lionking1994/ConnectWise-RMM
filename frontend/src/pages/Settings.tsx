@@ -140,6 +140,7 @@ export const Settings: React.FC = () => {
           connectwiseCompanyId: data.connectwise?.credentials?.companyId || '',
           connectwisePublicKey: data.connectwise?.credentials?.publicKey || '',
           connectwisePrivateKey: data.connectwise?.credentials?.privateKey || '',
+          connectwiseClientId: data.connectwise?.credentials?.clientId || '',
           nableUrl: data.nable?.credentials?.apiUrl || '',
           nableAccessKey: data.nable?.credentials?.apiKey || '',
           rateLimitPerMinute: 60,

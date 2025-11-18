@@ -222,7 +222,12 @@ export class AssetInventoryService {
           nableCredential.credentials.apiKey,
           nableCredential.credentials.apiUrl
         );
-        devices = await nsightService.listAllDevices();
+        // Get both servers and workstations
+        const [servers, workstations] = await Promise.all([
+          nsightService.listServers(),
+          nsightService.listWorkstations()
+        ]);
+        devices = [...servers, ...workstations];
       } else {
         const nableService = NableService.getInstance();
         devices = await nableService.getDevices();
@@ -310,14 +315,14 @@ export class AssetInventoryService {
     const typeMap: Record<string, AssetType> = {
       'server': AssetType.SERVER,
       'workstation': AssetType.WORKSTATION,
-      'laptop': AssetType.LAPTOP,
+      'laptop': AssetType.WORKSTATION,
       'network': AssetType.NETWORK_DEVICE,
       'printer': AssetType.PRINTER,
       'mobile': AssetType.MOBILE_DEVICE,
-      'software': AssetType.SOFTWARE,
+      'software': AssetType.OTHER,
       'vm': AssetType.VIRTUAL_MACHINE,
       'virtual': AssetType.VIRTUAL_MACHINE,
-      'cloud': AssetType.CLOUD_RESOURCE
+      'cloud': AssetType.OTHER
     };
 
     const lowerType = typeName.toLowerCase();
@@ -423,10 +428,10 @@ export class AssetInventoryService {
     notes?: string
   ) {
     const history = this.historyRepository.create({
-      assetId,
+      asset: { id: assetId } as any,
       action,
       changes,
-      userId,
+      performedBy: userId,
       notes
     });
 
@@ -606,7 +611,7 @@ export class AssetInventoryService {
 
   async getAssetHistory(assetId: string): Promise<AssetHistory[]> {
     return await this.historyRepository.find({
-      where: { assetId },
+      where: { asset: { id: assetId } },
       order: { timestamp: 'DESC' }
     });
   }
@@ -618,10 +623,10 @@ export class AssetInventoryService {
     description?: string
   ): Promise<AssetRelationship> {
     const relationship = this.relationshipRepository.create({
-      parentAssetId,
-      childAssetId,
+      parentAsset: { id: parentAssetId } as any,
+      childAsset: { id: childAssetId } as any,
       relationshipType,
-      description
+      metadata: description ? { description } : undefined
     });
 
     return await this.relationshipRepository.save(relationship);
@@ -630,8 +635,8 @@ export class AssetInventoryService {
   async getAssetRelationships(assetId: string): Promise<AssetRelationship[]> {
     return await this.relationshipRepository.find({
       where: [
-        { parentAssetId: assetId },
-        { childAssetId: assetId }
+        { parentAsset: { id: assetId } },
+        { childAsset: { id: assetId } }
       ]
     });
   }

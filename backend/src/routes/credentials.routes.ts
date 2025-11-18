@@ -189,10 +189,10 @@ credentialsRouter.post('/:id/test', async (req: AuthRequest, res, next) => {
             credential.credentials.apiUrl
           );
           
-          const testResponse = await nsightService.testConnection();
-          testResult.success = testResponse.success;
-          testResult.message = testResponse.message;
-          testResult.data = testResponse.data;
+          const isConnected = await nsightService.testConnection();
+          testResult.success = isConnected;
+          testResult.message = isConnected ? 'N-sight API connection successful' : 'N-sight API connection failed';
+          testResult.data = { connected: isConnected };
         } else {
           // N-able RMM API format (API key and secret)
           const response = await axios.get(`${credential.credentials.apiUrl}/devices`, {

@@ -178,6 +178,31 @@ async function start() {
       console.log('  ⚠ Settings routes failed:', e.message);
     }
 
+    try {
+      const { nableRouter } = await import('./routes/nable.routes');
+      app.use('/api/nable', nableRouter);
+      console.log('  ✓ N-able routes loaded');
+    } catch (e) {
+      console.log('  ⚠ N-able routes failed:', e.message);
+    }
+
+    // Initialize sync service for ConnectWise/N-able integration
+    console.log('Initializing sync service...');
+    setTimeout(async () => {
+      try {
+        const { SyncService } = await import('./services/SyncService');
+        const syncService = SyncService.getInstance();
+        await syncService.initialize();
+        console.log('✓ Sync service initialized - will sync with external APIs if credentials are configured');
+        
+        // Optional: Trigger initial sync (uncomment if needed)
+        // await syncService.syncAll();
+        // console.log('✓ Initial sync completed');
+      } catch (error: any) {
+        console.log('⚠ Sync service initialization failed - will work with local data:', error.message);
+      }
+    }, 3000); // Delay to ensure database and services are ready
+
     // Simple error handler
     app.use((err: any, req: any, res: any, next: any) => {
       console.error('Error:', err.message);

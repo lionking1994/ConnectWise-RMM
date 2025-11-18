@@ -81,7 +81,7 @@ export class AutomationEngine {
   }
   
   /**
-   * Attempt automatic remediation for known alert types
+   * Attempt automatic remediation for N-able check failures
    */
   private async attemptAutoRemediation(ticket: Ticket, alert: any): Promise<void> {
     // Check if auto-remediation is enabled
@@ -91,7 +91,213 @@ export class AutomationEngine {
       return;
     }
 
-    // Map alert types to remediation scripts
+    // Import check type mapper
+    const { NableCheckTypeMapper } = await import('./NableCheckTypeMapper');
+
+    // Get check type from alert metadata
+    const checkType = alert.checkType || ticket.metadata?.nableData?.checkData?.checkType;
+    const checkStatus = alert.checkStatus || ticket.metadata?.nableData?.checkData?.checkStatus;
+    const formattedOutput = alert.formattedOutput || ticket.metadata?.nableData?.checkData?.formattedOutput;
+    const deviceId = alert.deviceId || ticket.deviceId;
+
+    if (!checkType) {
+      logger.debug('No check type found in alert, skipping auto-remediation');
+      return;
+    }
+
+    // Get remediation mapping for this check type
+    const remediation = NableCheckTypeMapper.getRemediation(checkType);
+    
+    if (!remediation) {
+      logger.debug(`No remediation mapping found for check type ${checkType}`);
+      return;
+    }
+
+    // Check if auto-remediation should run
+    if (!NableCheckTypeMapper.shouldAutoRemediate(checkType, checkStatus, formattedOutput)) {
+      logger.info(`Auto-remediation not applicable for check type ${checkType} with status ${checkStatus}`);
+      return;
+    }
+
+    // Parse check description for additional context
+    const checkContext = NableCheckTypeMapper.parseCheckDescription(
+      alert.description || ticket.metadata?.nableData?.checkData?.description || ''
+    );
+
+    // Build remediation parameters
+    const remediationParams = {
+      ...remediation.parameters,
+      ...(checkContext.targetService && { serviceName: checkContext.targetService }),
+      ...(checkContext.targetDisk && { driveLetter: checkContext.targetDisk }),
+      ...(checkContext.targetProcess && { processName: checkContext.targetProcess }),
+      ticketId: ticket.id,
+      checkType: checkType,
+      formattedOutput: formattedOutput
+    };
+
+    logger.info(`Attempting auto-remediation for ${remediation.name}`, {
+      script: remediation.remediationScript,
+      deviceId: deviceId,
+      params: remediationParams
+    });
+
+    try {
+      // Get N-sight service to run remediation
+      const syncService = (await import('../SyncService')).SyncService.getInstance();
+      const nsightService = (syncService as any).nsightService;
+      
+      if (!nsightService) {
+        logger.warn('N-sight service not available for remediation');
+        return;
+      }
+
+      // Run the remediation script on the device
+      const result = await nsightService.runTaskNow(
+        deviceId,
+        remediation.remediationScript,
+        remediationParams
+      );
+
+      // Log remediation attempt
+      await this.logRemediationAttempt(ticket, {
+        script: remediation.remediationScript,
+        params: remediationParams,
+        result: result,
+        checkType: checkType
+      });
+
+      if (result.success) {
+        // Update ticket with remediation info
+        if (!ticket.notes) {
+          ticket.notes = [];
+        }
+        ticket.notes.push({
+          id: `auto-remediation-${Date.now()}`,
+          text: `Executed ${remediation.name} - ${result.message}`,
+          author: 'Automation Engine',
+          timestamp: new Date(),
+          type: 'automation' as const
+        });
+        ticket.metadata = {
+          ...ticket.metadata,
+          customFields: {
+            ...ticket.metadata?.customFields,
+            lastRemediation: {
+              timestamp: new Date(),
+              script: remediation.remediationScript,
+              checkType: checkType,
+              result: result
+            }
+          }
+        };
+        await this.ticketRepository.save(ticket);
+        
+        logger.info(`Auto-remediation successful for ticket ${ticket.id}`);
+      } else {
+        logger.error(`Auto-remediation failed for ticket ${ticket.id}: ${result.error}`);
+        
+        // Escalate if remediation fails and escalation is required
+        if (remediation.escalationRequired) {
+          await this.escalateTicketWithReason(ticket, `Auto-remediation failed: ${result.error}`);
+        }
+      }
+    } catch (error) {
+      logger.error(`Error during auto-remediation for ticket ${ticket.id}:`, error);
+      
+      // Escalate on error if required
+      if (remediation.escalationRequired) {
+        await this.escalateTicketWithReason(ticket, `Auto-remediation error: ${error}`);
+      }
+    }
+  }
+
+  /**
+   * Log remediation attempt for audit
+   */
+  private async logRemediationAttempt(ticket: Ticket, attempt: any): Promise<void> {
+    // For auto-remediation, we don't have a specific rule, so we just log the attempt
+    const history = this.historyRepository.create({
+      ruleId: 'auto-remediation', // Use a placeholder ID for auto-remediation
+      ticket: ticket,
+      ticketId: ticket.id,
+      status: attempt.result.success ? ExecutionStatus.SUCCESS : ExecutionStatus.FAILED,
+      executionSteps: [{
+        action: 'run_script',
+        startTime: new Date(),
+        endTime: new Date(),
+        status: attempt.result.success ? ExecutionStatus.SUCCESS : ExecutionStatus.FAILED,
+        output: attempt.result,
+        error: attempt.result.error
+      }],
+      input: attempt.params,
+      output: attempt.result,
+      errorMessage: attempt.result.error,
+      startedAt: new Date(),
+      completedAt: new Date(),
+      durationMs: 0,
+      retryCount: 0
+    });
+    
+    await this.historyRepository.save(history);
+  }
+
+  /**
+   * Escalate ticket when remediation fails or critical issues detected
+   */
+  private async escalateTicketWithReason(ticket: Ticket, reason: string): Promise<void> {
+    // Update ticket priority
+    if (ticket.priority !== TicketPriority.CRITICAL) {
+      ticket.priority = TicketPriority.HIGH;
+    }
+    
+    // Add escalation note
+    if (!ticket.notes) {
+      ticket.notes = [];
+    }
+    ticket.notes.push({
+      id: `escalation-${Date.now()}`,
+      text: `ESCALATED: ${reason}`,
+      author: 'Automation Engine',
+      timestamp: new Date(),
+      type: 'system' as const
+    });
+    
+    // Mark for immediate attention
+    ticket.metadata = {
+      ...ticket.metadata,
+      customFields: {
+        ...ticket.metadata?.customFields,
+        escalated: true,
+        escalationReason: reason,
+        escalatedAt: new Date()
+      }
+    };
+    
+    await this.ticketRepository.save(ticket);
+    
+    // Send notification
+    try {
+      await this.notification.send({
+        channels: ['email', 'slack'],
+        subject: `Ticket Escalated: ${ticket.title}`,
+        message: `Ticket ${ticket.ticketNumber || ticket.id} has been escalated. Reason: ${reason}`,
+        priority: 'high',
+        metadata: {
+          ticketId: ticket.id,
+          reason: reason
+        }
+      });
+    } catch (error) {
+      logger.warn('Failed to send escalation notification:', error);
+    }
+  }
+
+  /**
+   * Legacy remediation map for backward compatibility
+   * @deprecated Use attemptAutoRemediation with NableCheckTypeMapper instead
+   */
+  private async attemptLegacyAutoRemediation_deprecated(ticket: Ticket, alert: any): Promise<void> {
+    // Map old alert types to remediation scripts
     const remediationMap: Record<string, { script: string; params?: any }> = {
       'disk_space': { script: 'disk_cleanup' },
       'disk_full': { script: 'disk_cleanup' },

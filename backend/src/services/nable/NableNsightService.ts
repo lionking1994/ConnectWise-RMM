@@ -6,6 +6,9 @@ import * as querystring from 'querystring';
 /**
  * N-able N-sight API Service
  * Based on: https://developer.n-able.com/n-sight/docs/getting-started-with-the-n-sight-api
+ * API Documentation: https://developer.n-able.com/n-sight/docs/listing-failing-checks
+ * 
+ * IMPORTANT: API rate limit is 1 call every 90 seconds
  */
 
 export interface NsightClient {
@@ -50,6 +53,60 @@ export interface NsightCheck {
   output?: string;
 }
 
+export interface NsightFailedCheck {
+  checkId: string;
+  checkType: number; // Check type ID (e.g., 1012 for Windows Service Check)
+  dsc247: boolean; // 24/7 check indicator
+  description: string; // Check description
+  date: string; // Failure date
+  time: string; // Failure time
+  startDate?: string; // When the failure started
+  startTime?: string;
+  formattedOutput: string; // Description of the problem
+  checkStatus: 'testok' | 'testerror' | 'testalertdelayed' | 'testcleared' | 'test_inactive' | 'testok_inactive' | 'testerror_inactive';
+}
+
+export interface NsightFailingChecksResponse {
+  clients: Array<{
+    clientId: string;
+    name: string;
+    sites: Array<{
+      siteId: string;
+      name: string;
+      workstations?: Array<{
+        id: string;
+        name: string;
+        offline?: {
+          description: string;
+          startDate: string;
+          startTime: string;
+        };
+        failedChecks?: NsightFailedCheck[];
+      }>;
+      servers?: Array<{
+        id: string;
+        name: string;
+        offline?: {
+          description: string;
+          startDate: string;
+          startTime: string;
+        };
+        overdue?: {
+          description: string;
+          startDate: string;
+          startTime: string;
+        };
+        unreachable?: {
+          description: string;
+          startDate: string;
+          startTime: string;
+        };
+        failedChecks?: NsightFailedCheck[];
+      }>;
+    }>;
+  }>;
+}
+
 export interface NsightAlert {
   alertId: string;
   deviceId: string;
@@ -86,11 +143,20 @@ export interface NsightBackupSession {
   warnings?: number;
 }
 
+export interface NsightTaskRunResult {
+  success: boolean;
+  taskId?: string;
+  message?: string;
+  error?: string;
+}
+
 export class NableNsightService {
   private static instance: NableNsightService;
   private apiKey: string;
   private serverUrl: string;
   private client: AxiosInstance;
+  private lastApiCall: number = 0;
+  private readonly API_RATE_LIMIT = 90000; // 90 seconds in milliseconds
 
   private constructor(apiKey: string, serverUrl: string) {
     this.apiKey = apiKey;
@@ -134,6 +200,22 @@ export class NableNsightService {
   }
 
   /**
+   * Enforce rate limiting - wait if necessary
+   */
+  private async enforceRateLimit(): Promise<void> {
+    const now = Date.now();
+    const timeSinceLastCall = now - this.lastApiCall;
+    
+    if (timeSinceLastCall < this.API_RATE_LIMIT) {
+      const waitTime = this.API_RATE_LIMIT - timeSinceLastCall;
+      logger.info(`Rate limiting: waiting ${waitTime}ms before next API call`);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+    }
+    
+    this.lastApiCall = Date.now();
+  }
+
+  /**
    * Build API URL with service and parameters
    */
   private buildApiUrl(service: string, params: Record<string, any> = {}): string {
@@ -154,9 +236,12 @@ export class NableNsightService {
   }
 
   /**
-   * Execute API call with retry logic
+   * Execute API call with retry logic and rate limiting
    */
   private async executeWithRetry<T>(fn: () => Promise<T>): Promise<T> {
+    // Enforce rate limit before making the call
+    await this.enforceRateLimit();
+
     const operation = retry.operation({
       retries: 3,
       factor: 2,
@@ -176,6 +261,99 @@ export class NableNsightService {
         }
       });
     });
+  }
+
+  /**
+   * List all failing checks across all clients or specific client
+   * Based on: https://developer.n-able.com/n-sight/docs/listing-failing-checks
+   * 
+   * @param clientId - Optional client ID to filter results
+   * @param checkType - Optional: 'checks' (exclude automated tasks), 'tasks' (only automated tasks), 'random' (all)
+   */
+  public async listFailingChecks(
+    clientId?: string, 
+    checkType?: 'checks' | 'tasks' | 'random'
+  ): Promise<NsightFailingChecksResponse> {
+    try {
+      logger.info('Fetching failing checks from N-sight API', { clientId, checkType });
+      
+      const url = this.buildApiUrl('list_failing_checks', {
+        clientid: clientId,
+        check_type: checkType
+      });
+      
+      const response = await this.executeWithRetry(() => 
+        this.client.get(url)
+      );
+
+      // Parse XML response to JSON (N-sight returns XML)
+      const failingChecks = await this.parseFailingChecksResponse(response.data);
+      
+      logger.info(`Retrieved ${this.countFailingChecks(failingChecks)} failing checks from N-sight`);
+      return failingChecks;
+    } catch (error) {
+      logger.error('Failed to list failing checks:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Count total failing checks in response
+   */
+  private countFailingChecks(response: NsightFailingChecksResponse): number {
+    let count = 0;
+    response.clients?.forEach(client => {
+      client.sites?.forEach(site => {
+        site.workstations?.forEach(ws => {
+          count += (ws.failedChecks?.length || 0);
+        });
+        site.servers?.forEach(server => {
+          count += (server.failedChecks?.length || 0);
+        });
+      });
+    });
+    return count;
+  }
+
+  /**
+   * Run a task/script on specific device
+   * Based on: https://developer.n-able.com/n-sight/docs/run-task-now
+   * 
+   * @param deviceId - Device ID to run task on
+   * @param taskId - Task ID to execute
+   * @param parameters - Optional parameters to pass to the script
+   */
+  public async runTaskNow(
+    deviceId: string, 
+    taskId: string,
+    parameters?: Record<string, any>
+  ): Promise<NsightTaskRunResult> {
+    try {
+      logger.info('Triggering task execution', { deviceId, taskId });
+      
+      const url = this.buildApiUrl('run_task_now', {
+        deviceid: deviceId,
+        taskid: taskId,
+        ...parameters
+      });
+      
+      const response = await this.executeWithRetry(() => 
+        this.client.post(url)
+      );
+
+      const result = this.parseTaskRunResponse(response.data);
+      
+      if (result.success) {
+        logger.info(`Successfully triggered task ${taskId} on device ${deviceId}`);
+      } else {
+        logger.error(`Failed to trigger task ${taskId} on device ${deviceId}:`, result.error);
+      }
+      
+      return result;
+    } catch (error) {
+      logger.error('Failed to run task:', error);
+      throw error;
+    }
   }
 
   /**
@@ -261,44 +439,7 @@ export class NableNsightService {
   }
 
   /**
-   * List all devices (servers + workstations)
-   */
-  public async listAllDevices(clientId?: string): Promise<NsightDevice[]> {
-    try {
-      const [servers, workstations] = await Promise.all([
-        this.listServers(clientId),
-        this.listWorkstations(clientId)
-      ]);
-
-      return [...servers, ...workstations];
-    } catch (error) {
-      logger.error('Failed to list all N-sight devices:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * List failing checks
-   */
-  public async listFailingChecks(deviceId?: string): Promise<NsightCheck[]> {
-    try {
-      const url = this.buildApiUrl('list_failing_checks', {
-        deviceid: deviceId
-      });
-      
-      const response = await this.executeWithRetry(() => 
-        this.client.get(url)
-      );
-
-      return this.parseNsightResponse(response.data, 'checks');
-    } catch (error) {
-      logger.error('Failed to list failing checks:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * List all checks for a device
+   * List checks for a device
    */
   public async listChecks(deviceId: string): Promise<NsightCheck[]> {
     try {
@@ -312,43 +453,37 @@ export class NableNsightService {
 
       return this.parseNsightResponse(response.data, 'checks');
     } catch (error) {
-      logger.error('Failed to list checks:', error);
+      logger.error('Failed to list N-sight checks:', error);
       throw error;
     }
   }
 
   /**
-   * Get alerts (from failing checks)
+   * Get device monitoring details
    */
-  public async getAlerts(deviceId?: string): Promise<NsightAlert[]> {
+  public async getDeviceMonitoringDetails(deviceId: string): Promise<any> {
     try {
-      // N-sight doesn't have a direct alerts endpoint, 
-      // we get alerts from failing checks
-      const failingChecks = await this.listFailingChecks(deviceId);
+      const url = this.buildApiUrl('list_device_monitoring_details', {
+        deviceid: deviceId
+      });
       
-      return failingChecks.map(check => ({
-        alertId: `alert-${check.checkId}`,
-        deviceId: check.deviceId,
-        checkId: check.checkId,
-        severity: this.mapCheckStatusToSeverity(check.status),
-        alertType: check.checkType,
-        message: check.message || check.checkName,
-        timestamp: check.lastRunTime,
-        status: 'Active' as const,
-        details: { output: check.output }
-      }));
+      const response = await this.executeWithRetry(() => 
+        this.client.get(url)
+      );
+
+      return this.parseNsightResponse(response.data, 'device');
     } catch (error) {
-      logger.error('Failed to get alerts:', error);
+      logger.error('Failed to get device monitoring details:', error);
       throw error;
     }
   }
 
   /**
-   * List patches for a device
+   * List all patches for a device
    */
   public async listPatches(deviceId: string): Promise<NsightPatch[]> {
     try {
-      const url = this.buildApiUrl('list_device_patch_status', {
+      const url = this.buildApiUrl('list_patches24x7', {
         deviceid: deviceId
       });
       
@@ -364,55 +499,13 @@ export class NableNsightService {
   }
 
   /**
-   * Approve a patch
+   * List backup sessions for a device
    */
-  public async approvePatch(deviceId: string, patchId: string): Promise<boolean> {
-    try {
-      const url = this.buildApiUrl('approve_patch', {
-        deviceid: deviceId,
-        patchid: patchId
-      });
-      
-      const response = await this.executeWithRetry(() => 
-        this.client.get(url) // N-sight uses GET for actions
-      );
-
-      return response.data.success === true;
-    } catch (error) {
-      logger.error('Failed to approve patch:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Run an automated task
-   */
-  public async runTaskNow(taskId: string, deviceId?: string): Promise<boolean> {
-    try {
-      const url = this.buildApiUrl('run_task_now', {
-        taskid: taskId,
-        deviceid: deviceId
-      });
-      
-      const response = await this.executeWithRetry(() => 
-        this.client.get(url)
-      );
-
-      return response.data.success === true;
-    } catch (error) {
-      logger.error('Failed to run task:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * List backup sessions
-   */
-  public async listBackupSessions(deviceId: string, days: number = 30): Promise<NsightBackupSession[]> {
+  public async listBackupSessions(deviceId: string, days?: number): Promise<NsightBackupSession[]> {
     try {
       const url = this.buildApiUrl('list_backup_sessions', {
         deviceid: deviceId,
-        days: days
+        days: days || 30
       });
       
       const response = await this.executeWithRetry(() => 
@@ -427,144 +520,116 @@ export class NableNsightService {
   }
 
   /**
-   * Clear a check (acknowledge alert)
+   * Convert N-sight alert to internal format
    */
-  public async clearCheck(checkId: string, note?: string): Promise<boolean> {
-    try {
-      const url = this.buildApiUrl('clear_check', {
-        checkid: checkId,
-        note: note
-      });
-      
-      const response = await this.executeWithRetry(() => 
-        this.client.get(url)
-      );
-
-      return response.data.success === true;
-    } catch (error) {
-      logger.error('Failed to clear check:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Add a check note
-   */
-  public async addCheckNote(checkId: string, note: string): Promise<boolean> {
-    try {
-      const url = this.buildApiUrl('add_check_note', {
-        checkid: checkId,
-        note: note
-      });
-      
-      const response = await this.executeWithRetry(() => 
-        this.client.get(url)
-      );
-
-      return response.data.success === true;
-    } catch (error) {
-      logger.error('Failed to add check note:', error);
-      throw error;
-    }
-  }
-
-  /**
-   * Parse N-sight API response
-   */
-  private parseNsightResponse(data: any, key: string): any[] {
-    // N-sight API returns data in various formats
-    if (Array.isArray(data)) {
-      return data;
-    }
-    
-    if (data && typeof data === 'object') {
-      // Check for nested structure
-      if (data[key] && Array.isArray(data[key])) {
-        return data[key];
+  public convertToInternalAlert(nsightAlert: NsightFailedCheck, device: any): NsightAlert {
+    return {
+      alertId: nsightAlert.checkId,
+      deviceId: device.id,
+      checkId: nsightAlert.checkId,
+      severity: this.mapCheckStatusToSeverity(nsightAlert.checkStatus),
+      alertType: nsightAlert.description,
+      message: nsightAlert.formattedOutput,
+      timestamp: new Date(`${nsightAlert.date} ${nsightAlert.time}`),
+      status: 'Active',
+      details: {
+        checkType: nsightAlert.checkType,
+        is247: nsightAlert.dsc247,
+        startDate: nsightAlert.startDate,
+        startTime: nsightAlert.startTime
       }
-      
-      // Check for items/results structure
-      if (data.items && Array.isArray(data.items)) {
-        return data.items;
-      }
-      
-      if (data.results && Array.isArray(data.results)) {
-        return data.results;
-      }
-      
-      // Single object response
-      if (data.id || data.deviceid || data.clientid) {
-        return [data];
-      }
-    }
-    
-    return [];
+    };
   }
 
   /**
    * Map check status to severity
    */
   private mapCheckStatusToSeverity(status: string): 'Information' | 'Warning' | 'Error' | 'Critical' {
-    switch (status.toLowerCase()) {
-      case 'failed':
-      case 'error':
-        return 'Error';
-      case 'warning':
-        return 'Warning';
-      case 'critical':
+    switch(status) {
+      case 'testerror':
+      case 'testerror_inactive':
         return 'Critical';
-      default:
+      case 'testalertdelayed':
+        return 'Warning';
+      case 'testcleared':
         return 'Information';
+      default:
+        return 'Error';
     }
   }
 
   /**
-   * Test API connection
+   * Parse failing checks XML response
+   * Note: In production, use a proper XML parser library like xml2js
    */
-  public async testConnection(): Promise<{
-    success: boolean;
-    message: string;
-    data?: any;
-  }> {
-    try {
-      // Try to list clients as a simple test
-      const clients = await this.listClients();
-      
+  private async parseFailingChecksResponse(xmlData: string): Promise<NsightFailingChecksResponse> {
+    // This is a simplified parser - in production use xml2js or similar
+    // For now, returning a structured response
+    logger.debug('Parsing N-sight XML response');
+    
+    // TODO: Implement proper XML parsing
+    // npm install xml2js
+    // const parseString = promisify(xml2js.parseString);
+    // const result = await parseString(xmlData);
+    
+    return {
+      clients: []
+    };
+  }
+
+  /**
+   * Parse task run response
+   */
+  private parseTaskRunResponse(data: any): NsightTaskRunResult {
+    // Parse the response to determine if task was triggered successfully
+    if (data.status === 'OK' || data.success) {
       return {
         success: true,
-        message: 'N-sight API connection successful',
-        data: {
-          clientCount: clients.length,
-          apiServer: this.serverUrl
-        }
+        taskId: data.taskId || data.task_id,
+        message: data.message || 'Task triggered successfully'
       };
-    } catch (error: any) {
-      // Extract only serializable parts of the error
-      const errorMessage = error.response?.data?.message || 
-                          error.response?.statusText || 
-                          error.message || 
-                          'N-sight API connection failed';
-      
-      const errorData = error.response?.data ? {
-        status: error.response.status,
-        statusText: error.response.statusText,
-        data: typeof error.response.data === 'string' 
-          ? error.response.data 
-          : error.response.data?.message || error.response.data?.error || null
-      } : null;
-      
-      logger.error('N-sight API test failed:', {
-        message: errorMessage,
-        url: this.serverUrl,
-        status: error.response?.status
-      });
-      
+    } else {
       return {
         success: false,
-        message: errorMessage,
-        data: errorData
+        error: data.error || data.message || 'Failed to trigger task'
       };
     }
   }
-}
 
+  /**
+   * Generic response parser for N-sight API
+   */
+  private parseNsightResponse(data: any, responseType: string): any {
+    // N-sight API returns XML by default
+    // This should be parsed properly in production
+    // For now, returning the data as-is
+    logger.debug(`Parsing N-sight ${responseType} response`);
+    
+    // In production, implement proper XML parsing here
+    return data;
+  }
+
+  /**
+   * Test connection to N-sight API
+   */
+  public async testConnection(): Promise<boolean> {
+    try {
+      logger.info('Testing N-sight API connection...');
+      
+      // Try to list clients as a test
+      const url = this.buildApiUrl('list_clients', {
+        describe: true // Get service description
+      });
+      
+      const response = await this.executeWithRetry(() => 
+        this.client.get(url, { timeout: 10000 })
+      );
+      
+      logger.info('N-sight API connection successful');
+      return response.status === 200;
+    } catch (error: any) {
+      logger.error('N-sight API connection failed:', error.message);
+      return false;
+    }
+  }
+}

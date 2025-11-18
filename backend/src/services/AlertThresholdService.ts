@@ -1,6 +1,6 @@
-import { AlertThreshold, ThresholdType, ThresholdSeverity as AlertThresholdSeverity, ComparisonOperator } from '../entities/AlertThreshold';
+import { AlertThreshold, ThresholdType, ThresholdSeverity as AlertThresholdSeverity, ComparisonOperator, EscalationLevel as EscalationLevelEnum } from '../entities/AlertThreshold';
 import { AppDataSource } from '../database/dataSource';
-import { EscalationChain } from '../entities/EscalationChain';
+import { EscalationChain, EscalationLevel } from '../entities/EscalationChain';
 import { Ticket, TicketStatus, TicketPriority, TicketSource } from '../entities/Ticket';
 import { logger } from '../utils/logger';
 import { TeamsService } from './teams/TeamsService';
@@ -76,7 +76,7 @@ export class AlertThresholdService {
   }
 
   async updateThreshold(id: string, data: Partial<AlertThreshold>): Promise<AlertThreshold> {
-    const threshold = await this.thresholdRepository.findOne({ where: { id } });
+    const threshold = await this.thresholdRepository.findOne({ where: { id: parseInt(id) } });
     
     if (!threshold) {
       throw new Error(`Threshold ${id} not found`);
@@ -100,7 +100,7 @@ export class AlertThresholdService {
   }
 
   async deleteThreshold(id: string): Promise<void> {
-    const threshold = await this.thresholdRepository.findOne({ where: { id } });
+    const threshold = await this.thresholdRepository.findOne({ where: { id: parseInt(id) } });
     
     if (!threshold) {
       throw new Error(`Threshold ${id} not found`);
@@ -114,7 +114,7 @@ export class AlertThresholdService {
 
   async getThreshold(id: string): Promise<AlertThreshold> {
     const threshold = await this.thresholdRepository.findOne({
-      where: { id },
+      where: { id: parseInt(id) },
       relations: ['escalationChain']
     });
 
@@ -155,7 +155,6 @@ export class AlertThresholdService {
     // Find applicable thresholds
     const thresholds = await this.thresholdRepository.find({
       where: {
-        metricType: metric.metricType,
         isActive: true
       },
       relations: ['escalationChain']
@@ -214,7 +213,7 @@ export class AlertThresholdService {
     history.push({
       timestamp: new Date(),
       value: metric.value,
-      thresholdId: threshold.id
+      thresholdId: String(threshold.id)
     });
 
     // Keep only last 100 entries
@@ -323,18 +322,12 @@ export class AlertThresholdService {
 
       // Send Teams notification
       if (threshold.notificationChannels?.includes('teams')) {
-        await teamsService.sendAlertNotification({
-          title: `🚨 Alert: ${threshold.name}`,
-          message: `Device: ${metric.deviceName}\nValue: ${metric.value} (Threshold: ${threshold.value})`,
-          severity: threshold.severity,
-          actions: [
-            {
-              type: 'OpenUrl',
-              title: 'View Details',
-              url: `${process.env.FRONTEND_URL}/alerts/${threshold.id}`
-            }
-          ]
-        });
+        await teamsService.sendAlertNotification(
+          `🚨 Alert: ${threshold.name}`,
+          `Device: ${metric.deviceName}\nValue: ${metric.value} (Threshold: ${threshold.value})`,
+          threshold.severity as 'info' | 'warning' | 'error' | 'critical',
+          `${process.env.FRONTEND_URL}/alerts/${threshold.id}`
+        );
         actions.push('Sent Teams notification');
       }
 
@@ -391,13 +384,13 @@ export class AlertThresholdService {
 
     try {
       // Execute notification action
-      if (level.notificationChannels?.includes('email')) {
-      const emailService = EmailService.getInstance();
+      if (threshold.notificationChannels?.includes('email')) {
+        const emailService = EmailService.getInstance();
         await emailService.sendSystemAlert(
           `[${level.name}] Alert: ${threshold.name}`,
           `Escalation Level: ${level.name}\n\nDevice: ${metric.deviceName}\nMetric: ${metric.metricType}\nValue: ${metric.value}`,
           'critical',
-          level.notificationRecipients || []
+          threshold.notificationRecipients || []
         );
         actions.push(`Executed ${level.name}: email notification`);
       }

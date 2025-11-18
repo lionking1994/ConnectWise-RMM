@@ -86,7 +86,7 @@ export const Tickets: React.FC = () => {
         setSyncing(true);
         console.log('[TICKETS DEBUG] Setting syncing state to true');
       } else {
-        setLoading(true);
+      setLoading(true);
       }
       setError(null);
       
@@ -562,9 +562,9 @@ export const Tickets: React.FC = () => {
                           </Box>
                         }
                       >
-                        <Typography variant="body2">
+                      <Typography variant="body2">
                           {new Date(ticket.updatedAt).toLocaleDateString()}
-                        </Typography>
+                      </Typography>
                       </Tooltip>
                     </TableCell>
                     <TableCell>
